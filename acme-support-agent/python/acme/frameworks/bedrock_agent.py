@@ -11,8 +11,9 @@ import os
 from ..observability import enrich
 from ..tools import TOOL_FUNCTIONS, TOOL_SCHEMAS, SYSTEM_PROMPT
 
-MODEL = os.environ.get("ACME_MODEL", "anthropic.claude-3-5-sonnet-20240620-v1:0")
-REGION = os.environ.get("AWS_REGION", "us-east-1")
+# Cross-region inference profile; the older 3.5-sonnet v1 id is end-of-life on Bedrock.
+MODEL = os.environ.get("ACME_MODEL", "us.anthropic.claude-sonnet-4-5-20250929-v1:0")
+REGION = os.environ.get("AWS_REGION", "us-west-2")
 
 
 def _bedrock_tool_config():
