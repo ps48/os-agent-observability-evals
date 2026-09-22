@@ -38,24 +38,32 @@ layer changes per framework, and the SDK instruments all of them identically.
 
 ## Quick start
 
-```bash
-# 1. bring up the stack (OpenSearch, OTel Collector, Data Prepper, Prometheus, Dashboards)
-docker compose up -d
+The stack is the official [observability-stack](https://github.com/opensearch-project/observability-stack),
+included in this repo as a pinned git submodule at `observability-stack/` (repo root).
 
-# 2. wait for green, then run the verify script
+```bash
+# 1. clone with the observability-stack submodule
+git clone --recurse-submodules https://github.com/anirudha/os-agent-observability-evals.git
+cd os-agent-observability-evals
+
+# 2. bring up the stack (OpenSearch, OTel Collector, Data Prepper, Prometheus, Dashboards)
+cd observability-stack && docker compose up -d
+cd ../acme-support-agent
+
+# 3. wait for green, then run the verify script
 ./verify/check-stack.sh
 
-# 3. run the agent (Python example)
+# 4. run the agent (Python example)
 cd python
 pip install -e ".[openai]"          # or [anthropic], [bedrock], [langchain], [llamaindex], [all]
 export OPENAI_API_KEY=sk-...
 python -m acme.run "where is my order #1007?"
 
-# 4. confirm telemetry landed
+# 5. confirm telemetry landed
 cd ..
 ./verify/check-instrumentation.sh
 
-# 5. run the eval suite
+# 6. run the eval suite
 cd python
 python -m evals.run_evals
 ```

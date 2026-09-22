@@ -18,8 +18,10 @@ in OpenSearch — no separate silo.
 
 ## Setup
 
-Bring up the stack from [`../acme-support-agent`](../acme-support-agent)
-(`docker compose up -d`), then:
+**Stack:** use the pinned `observability-stack` submodule at the repo root —
+`cd observability-stack && docker compose up -d`.
+
+Then:
 
 ```bash
 # The GenAI SDK isn't on PyPI yet — install it from source first:
