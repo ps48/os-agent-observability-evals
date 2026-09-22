@@ -50,6 +50,10 @@ span type the stack cares about while staying simple enough to grade:
   - `search_policy(query)` → RAG over a returns/shipping policy doc
 - **`retrieval` / `embeddings`** — the policy search path
 
+`search_policy` is Acme's RAG stand-in: it's the tool call that emits the `retrieval` +
+`embeddings` child spans, so `invoke_agent → chat → execute_tool → retrieval → embeddings` is
+the full span chain for a policy question.
+
 Because the tools return fixed data, evaluation is objective: *did the agent call
 `lookup_order` with `1007` when asked "where's my order #1007?"* — yes or no. And there's a
 clear **golden path** for that question (`lookup_order` → answer, no detours), which we'll use
@@ -88,9 +92,13 @@ For Acme Support Agent:
 |---|---|
 | **Answers correctly** | Eval score on final answer vs. expected |
 | **Calls the right tool** | `execute_tool` spans with `gen_ai.tool.name` + arguments |
-| **Stays cheap** | `gen_ai.usage.input_tokens` / `output_tokens` per request |
+| **Stays cheap** | `gen_ai.usage.input_tokens` / `output_tokens` per request, scored as `cost` |
 | **Stays fast** | Span `durationInNanos`, end to end |
-| **Doesn't loop** | Count of `chat` spans per `invoke_agent` trace |
+| **Doesn't loop** | Count of `chat` spans per `invoke_agent` trace, scored as `no_loops` |
+
+Eval scores for Acme are `correctness`, `tool_correctness`, `cost`, and `no_loops`. Of those,
+`no_loops` and `cost` count toward pass/fail — a run that loops or blows its token budget fails
+the suite even if the final answer is correct.
 
 Failure modes we're explicitly watching for: wrong tool selection, hallucinated order details
 when `lookup_order` wasn't called, and runaway reasoning loops that burn tokens.
@@ -105,10 +113,14 @@ Local first. One Docker Compose brings up the whole pipeline: OpenSearch, the Op
 Collector, Data Prepper, Prometheus, and OpenSearch Dashboards.
 
 ```bash
-git clone https://github.com/anirudha/os-agent-observability-evals
-cd os-agent-observability-evals/acme-support-agent
+git clone --recurse-submodules https://github.com/anirudha/os-agent-observability-evals
+cd os-agent-observability-evals/observability-stack
 docker compose up -d
 ```
+
+The official observability-stack enables a set of example agents via
+`INCLUDE_COMPOSE_EXAMPLES` in its `.env`. Comment that out for a lean run with
+just the Acme agent's telemetry.
 
 The pipeline your telemetry will flow through:
 
@@ -293,16 +305,17 @@ curl -sk -u admin:'My_password_123!@#' \
 ```
 
 **2. Spans carry the GenAI attributes and the right shape.** Send Acme one question
-("where's my order #1007?") and confirm you see the expected operation types. (Data
-Prepper flattens each OTel span attribute into the index as
-`` `span.attributes.<key-with-dots-as-@>` `` — so `gen_ai.operation.name` is queried
-as `` `span.attributes.gen_ai@operation@name` ``.)
+("where's my order #1007?") and confirm you see the expected operation types. Data
+Prepper stores OTel span attributes as a nested `attributes` object with dot-path
+keys, so `gen_ai.operation.name` is queried as `` `attributes.gen_ai.operation.name` ``;
+resource attributes use `resource.attributes.…` and event attributes use
+`events.attributes.…`.
 
 ```bash
 curl -sk -u admin:'My_password_123!@#' \
   -X POST https://localhost:9200/_plugins/_ppl \
   -H 'Content-Type: application/json' \
-  -d '{"query": "source=otel-v1-apm-span-* | stats count() by serviceName, `span.attributes.gen_ai@operation@name`"}'
+  -d '{"query": "source=otel-v1-apm-span-* | stats count() by serviceName, `attributes.gen_ai.operation.name`"}'
 ```
 
 You want to see `invoke_agent`, `chat`, and `execute_tool` for `acme-support-agent`. The
@@ -329,13 +342,17 @@ Now the payoff: seeing what your agent actually did.
 **OpenSearch Dashboards** is where you explore — trace tree / DAG / timeline views,
 the service map, and ad-hoc PPL. A few queries you'll reach for constantly:
 
+> The APM **service map** needs multiple instrumented services; the single Acme agent
+> produces no inter-service edges, so use the per-trace **Trace Tree** (Agent Traces app)
+> to inspect the span hierarchy.
+
 Reconstruct a single trace (the whole reasoning tree for one question):
 
 ```bash
 curl -sk -u admin:'My_password_123!@#' \
   -X POST https://localhost:9200/_plugins/_ppl \
   -H 'Content-Type: application/json' \
-  -d '{"query": "source=otel-v1-apm-span-* | where traceId = '\''<TRACE_ID>'\'' | fields spanId, parentSpanId, name, `span.attributes.gen_ai@operation@name`, durationInNanos | sort startTime"}'
+  -d '{"query": "source=otel-v1-apm-span-* | where traceId = '\''<TRACE_ID>'\'' | fields spanId, parentSpanId, name, `attributes.gen_ai.operation.name`, durationInNanos, startTime | sort startTime"}'
 ```
 
 Find slow agent invocations:
@@ -344,7 +361,7 @@ Find slow agent invocations:
 curl -sk -u admin:'My_password_123!@#' \
   -X POST https://localhost:9200/_plugins/_ppl \
   -H 'Content-Type: application/json' \
-  -d '{"query": "source=otel-v1-apm-span-* | where `span.attributes.gen_ai@operation@name` = '\''invoke_agent'\'' AND durationInNanos > 5000000000 | fields traceId, `span.attributes.gen_ai@agent@name`, durationInNanos | sort - durationInNanos"}'
+  -d '{"query": "source=otel-v1-apm-span-* | where `attributes.gen_ai.operation.name` = '\''invoke_agent'\'' AND durationInNanos > 5000000000 | fields traceId, `attributes.gen_ai.agent.name`, durationInNanos | sort - durationInNanos"}'
 ```
 
 Find error spans (`status.code = 2` is ERROR in OTel):
@@ -353,7 +370,7 @@ Find error spans (`status.code = 2` is ERROR in OTel):
 curl -sk -u admin:'My_password_123!@#' \
   -X POST https://localhost:9200/_plugins/_ppl \
   -H 'Content-Type: application/json' \
-  -d '{"query": "source=otel-v1-apm-span-* | where `status.code` = 2 | fields traceId, serviceName, name, `events.attributes.exception@message` | sort - startTime | head 20"}'
+  -d '{"query": "source=otel-v1-apm-span-* | where `status.code` = 2 | fields traceId, serviceName, name, `events.attributes.exception.message`, startTime | sort - startTime | head 20"}'
 ```
 
 Token usage by model (your cost signal):
@@ -362,7 +379,7 @@ Token usage by model (your cost signal):
 curl -sk -u admin:'My_password_123!@#' \
   -X POST https://localhost:9200/_plugins/_ppl \
   -H 'Content-Type: application/json' \
-  -d '{"query": "source=otel-v1-apm-span-* | where cast(`span.attributes.gen_ai@usage@input_tokens` as int) > 0 | stats sum(cast(`span.attributes.gen_ai@usage@input_tokens` as int)) as in, sum(cast(`span.attributes.gen_ai@usage@output_tokens` as int)) as out by `span.attributes.gen_ai@request@model`"}'
+  -d '{"query": "source=otel-v1-apm-span-* | where cast(`attributes.gen_ai.usage.input_tokens` as int) > 0 | stats sum(cast(`attributes.gen_ai.usage.input_tokens` as int)) as in, sum(cast(`attributes.gen_ai.usage.output_tokens` as int)) as out by `attributes.gen_ai.request.model`"}'
 ```
 
 Track a multi-turn conversation (Acme follow-ups like "can I return it?"):
@@ -371,7 +388,7 @@ Track a multi-turn conversation (Acme follow-ups like "can I return it?"):
 curl -sk -u admin:'My_password_123!@#' \
   -X POST https://localhost:9200/_plugins/_ppl \
   -H 'Content-Type: application/json' \
-  -d '{"query": "source=otel-v1-apm-span-* | where `span.attributes.gen_ai@conversation@id` != '\'''\'' | stats count() as turns, sum(cast(`span.attributes.gen_ai@usage@input_tokens` as int)) as in_tokens by `span.attributes.gen_ai@conversation@id`"}'
+  -d '{"query": "source=otel-v1-apm-span-* | where `attributes.gen_ai.conversation.id` != '\'''\'' | stats count() as turns, sum(cast(`attributes.gen_ai.usage.input_tokens` as int)) as in_tokens by `attributes.gen_ai.conversation.id`"}'
 ```
 
 This is also where you catch the failure modes from Part 1: a trace with three `chat` spans and
@@ -409,7 +426,10 @@ status."
 **Run the suite with `evaluate()` / `Benchmark`** to score the whole dataset at once and track
 the trend as you iterate:
 
-- **LLM-as-judge** for the fuzzy criteria (was the answer correct, polite, grounded?).
+- **Answer correctness** — defaults to a substring check against the expected answer; set
+  `ACME_LLM_JUDGE=1` to score it with a Bedrock judge instead for the fuzzier criteria (was
+  the answer correct, polite, grounded?). The DeepEval/Ragas variants below show what
+  library-based judges look like instead.
 - **Golden Path trajectory comparison** for the structural ones: did the agent take the
   expected tool path, or wander? For Acme's order-status question the golden trajectory is
   exactly `invoke_agent → lookup_order → answer`. Any extra `chat` loops or a `search_policy`
@@ -507,7 +527,7 @@ journey is a loop, not a line.
 | Part | What you did | Acme made it concrete by… |
 |---|---|---|
 | 1 | Defined goals → eval criteria | correctness, right-tool, cost, latency, no-loops |
-| 2 | Stood up the stack locally | one `docker compose up` |
+| 2 | Stood up the stack locally | `docker compose up -d` in the `observability-stack` submodule |
 | 3 | Instrumented your framework | `register()` + `@observe`, any of 20+ libs |
 | 4 | Verified data lands correctly | `invoke_agent → chat → execute_tool` by `traceId` |
 | 5 | Observed and debugged | trace trees, slow/error spans, token usage |
@@ -521,5 +541,6 @@ Start at your row in the table at the top. The fastest path to "is my agent heal
 The full, runnable code — the main multi-framework tutorial plus the five standalone variants
 (LangGraph, Strands, LangGraph+DeepEval, LangGraph+Ragas, and Bedrock AgentCore Runtime) — is at
 **[github.com/anirudha/os-agent-observability-evals](https://github.com/anirudha/os-agent-observability-evals)**.
-Clone it, `docker compose up`, and run the variant that matches your stack.
+Clone it with `--recurse-submodules`, `docker compose up -d` in `observability-stack/`, and run
+the variant that matches your stack.
 ```
