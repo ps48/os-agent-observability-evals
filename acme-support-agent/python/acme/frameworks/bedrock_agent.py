@@ -10,6 +10,7 @@ import os
 
 from ..observability import enrich
 from ..tools import TOOL_FUNCTIONS, TOOL_SCHEMAS, SYSTEM_PROMPT
+from ..usage import record_usage
 
 # Cross-region inference profile; the older 3.5-sonnet v1 id is end-of-life on Bedrock.
 MODEL = os.environ.get("ACME_MODEL", "us.anthropic.claude-sonnet-4-5-20250929-v1:0")
@@ -46,6 +47,8 @@ def run_turn(question: str, history: list[dict]) -> str:
             system=[{"text": SYSTEM_PROMPT}],
             toolConfig=_bedrock_tool_config(),
         )
+        _u = resp.get("usage") or {}
+        record_usage(_u.get("inputTokens", 0), _u.get("outputTokens", 0))
         out = resp["output"]["message"]
         messages.append(out)
 
