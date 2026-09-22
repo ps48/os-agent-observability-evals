@@ -10,6 +10,9 @@ adapters call these same functions, so tool behavior is identical everywhere.
 
 from __future__ import annotations
 
+import os
+import json
+
 from .observability import observe, enrich, Op
 
 # ---------------------------------------------------------------------------
@@ -58,14 +61,46 @@ def check_inventory(sku: str) -> dict:
     return {"sku": sku, "in_stock": count} if count is not None else {"error": "sku_not_found", "sku": sku}
 
 
-@observe(op=Op.EXECUTE_TOOL, name="search_policy")
-def search_policy(query: str) -> dict:
-    """Search the returns/shipping policy doc (a tiny RAG stand-in)."""
+@observe(op=Op.EMBEDDINGS, name="embed_query")
+def _embed_query(query: str) -> list[float]:
+    """Embed the query with Bedrock Titan (real embeddings span).
+
+    Falls back to a deterministic stub vector if the call fails or creds are
+    missing, so the suite still runs offline — the embeddings span still appears.
+    """
+    try:
+        import boto3
+        region = os.environ.get("AWS_REGION", "us-west-2")
+        model = os.environ.get("ACME_EMBED_MODEL", "amazon.titan-embed-text-v2:0")
+        client = boto3.client("bedrock-runtime", region_name=region)
+        resp = client.invoke_model(modelId=model, body=json.dumps({"inputText": query}))
+        vec = json.loads(resp["body"].read())["embedding"]
+        enrich(embedding_model=model, embedding_dim=len(vec))
+        return vec
+    except Exception as e:  # stub fallback
+        enrich(embedding_fallback=str(e)[:120])
+        return [float((abs(hash(query)) >> i) & 1) for i in range(8)]
+
+
+@observe(op=Op.RETRIEVAL, name="retrieve_policy")
+def _retrieve_policy(query: str) -> dict:
+    """Retrieve the matching policy section (the RAG retrieval step)."""
     q = query.lower()
     for key, text in _POLICY_DOC.items():
         if key in q:
             return {"topic": key, "answer": text}
     return {"topic": "returns", "answer": _POLICY_DOC["returns"]}
+
+
+@observe(op=Op.EXECUTE_TOOL, name="search_policy")
+def search_policy(query: str) -> dict:
+    """Search the returns/shipping policy doc — a small RAG stand-in.
+
+    Embeds the query (embeddings span) then retrieves the matching section
+    (retrieval span), so the trace exercises the full retrieval path.
+    """
+    _embed_query(query)
+    return _retrieve_policy(query)
 
 
 # ---------------------------------------------------------------------------
