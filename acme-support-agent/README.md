@@ -75,14 +75,16 @@ to explore the traces.
 
 ```
 acme-support-agent/
-├── docker-compose.yml          # the full local stack
-├── infra/                      # collector, data-prepper, prometheus config
 ├── python/                     # native SDK agent (all frameworks)
 │   ├── acme/                   # agent + tools + framework adapters
 │   └── evals/                  # dataset + golden paths + eval runner
 ├── typescript/                 # raw-OTel agent (interim path)
 └── verify/                     # stack + instrumentation health checks
 ```
+
+The local stack (`docker-compose.yml`, collector/data-prepper/prometheus config) now
+lives in the `observability-stack/` git submodule at the repo root, not under
+`acme-support-agent/`.
 
 ## The journey, mapped to this repo
 
@@ -91,12 +93,12 @@ Full index with read / code / run links for every part: [`docs/README.md`](docs/
 | Blog part | Where in the repo |
 |---|---|
 | 1 — Define goals | [`python/evals/criteria.py`](python/evals/criteria.py) |
-| 2 — Stand up the stack | [`docker-compose.yml`](docker-compose.yml) |
+| 2 — Stand up the stack | [`observability-stack/docker-compose.yml`](../observability-stack/docker-compose.yml) (pinned submodule) |
 | 3 — Instrument | [`python/acme/observability.py`](python/acme/observability.py), [`typescript/src/observability.ts`](typescript/src/observability.ts) |
 | 4 — Verify | [`verify/`](verify/) |
 | 5 — Observe | [`verify/queries.md`](verify/queries.md) |
 | 6 — Evaluate | [`python/evals/`](python/evals/) |
-| 7 — Monitor production | [`infra/prometheus/`](infra/prometheus/), [`docs/production.md`](docs/production.md) |
+| 7 — Monitor production | [`docs/production.md`](docs/production.md) (Prometheus config now lives in the `observability-stack` submodule) |
 | 8 — Close the loop | [`python/evals/dataset.py`](python/evals/dataset.py) |
 
 ## Credentials

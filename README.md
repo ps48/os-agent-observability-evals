@@ -113,7 +113,7 @@ Full index with read / code / run links for every part:
 | 4 | Verify telemetry lands | [`verify/`](acme-support-agent/verify/) |
 | 5 | Observe & debug | [`verify/queries.md`](acme-support-agent/verify/queries.md) |
 | 6 | Evaluate against a dataset | [`python/evals/`](acme-support-agent/python/evals/) |
-| 7 | Monitor production | [`infra/prometheus/`](acme-support-agent/infra/prometheus/), [`docs/production.md`](acme-support-agent/docs/production.md) |
+| 7 | Monitor production | [`docs/production.md`](acme-support-agent/docs/production.md) (Prometheus config now lives in the `observability-stack` submodule) |
 | 8 | Close the loop | [`python/evals/dataset.py`](acme-support-agent/python/evals/dataset.py) |
 
 ## What's tested

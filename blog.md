@@ -96,9 +96,12 @@ For Acme Support Agent:
 | **Stays fast** | Span `durationInNanos`, end to end |
 | **Doesn't loop** | Count of `chat` spans per `invoke_agent` trace, scored as `no_loops` |
 
-Eval scores for Acme are `correctness`, `tool_correctness`, `cost`, and `no_loops`. Of those,
-`no_loops` and `cost` count toward pass/fail — a run that loops or blows its token budget fails
-the suite even if the final answer is correct.
+Eval scores for Acme are `answer_correctness`, `right_tool`, `trajectory_match`, `latency_ok`,
+`no_loops`, and `cost`. All six count toward pass/fail — a run that loops, blows its token
+budget, is too slow, calls the wrong tool, or gets the trajectory wrong fails the suite even if
+the final answer is correct. Token usage is only captured by the Bedrock adapter today, so
+`cost` is only a meaningful signal on Bedrock runs — other frameworks report 0 tokens and
+`cost` trivially passes until their adapters also call `record_usage`.
 
 Failure modes we're explicitly watching for: wrong tool selection, hallucinated order details
 when `lookup_order` wasn't called, and runaway reasoning loops that burn tokens.
