@@ -2,18 +2,24 @@
 """Curated dashboard init for the Acme Support Agent.
 
 Creates two agent dashboards ("Acme Agent - Run Details" and "Acme Agent - Evals")
-from PPL + PromQL `explore` panels (plus Markdown headers/nav), and removes the
+from PPL + PromQL `explore` panels (plus Markdown overview/nav), and removes the
 stack's demo dashboards so Dashboards shows only what this tutorial needs.
 
-Feature set is modeled on Arize/Phoenix, Braintrust, LangSmith and Langfuse eval +
-observability dashboards: RED metrics, cost/token per-model, latency percentiles +
-distribution, pass/fail gauges, per-criterion quality bars, score/error timelines,
-status "health" strip, tool analytics, and click-through drill-down to the trace.
+Modeled on Arize/Phoenix, Braintrust, LangSmith and Langfuse eval + observability
+dashboards: RED metrics, cost/token per-model, latency percentiles + distribution,
+pass/fail gauges, per-criterion quality bars, score/error timelines, a status
+"health" strip, tool analytics, KPI cards with trend sparklines, filter variables,
+and click-through drill-down to the trace.
 
 Runs after the stack's own `opensearch-dashboards-init`. Idempotent (fixed ids,
 `overwrite=true`).
 
-Env: OSD_BASE_URL, OSD_USER, OSD_PASSWORD, WORKSPACE_NAME, SPAN_PATTERN.
+Env:
+  OSD_BASE_URL   default http://localhost:5601   (container: http://opensearch-dashboards:5601)
+  OSD_USER / OSD_PASSWORD
+  WORKSPACE_NAME default "Observability Stack"
+  SPAN_PATTERN   default otel-v1-apm-span*
+  OSD_PUBLIC_URL browser-facing base for nav links + trace drill-down (default http://localhost:5601)
 """
 from __future__ import annotations
 import json, os, sys, time
@@ -25,16 +31,14 @@ USER = os.environ.get("OSD_USER", "admin")
 PW = os.environ.get("OSD_PASSWORD", "My_password_123!@#")
 WORKSPACE_NAME = os.environ.get("WORKSPACE_NAME", "Observability Stack")
 SPAN_PATTERN = os.environ.get("SPAN_PATTERN", "otel-v1-apm-span*")
-# Browser-reachable base for cross-app links/drill-downs (data-links need absolute URLs).
-# Set to the tunnel/host URL when serving remotely; defaults to localhost.
 PUBLIC = os.environ.get("OSD_PUBLIC_URL", "http://localhost:5601").rstrip("/")
+OS_URL = os.environ.get("OPENSEARCH_URL", "https://localhost:9200").rstrip("/")
 GTIME = "_g=(time:(from:now-24h,to:now))"
 PROM = "ObservabilityStack_Prometheus"
 H = {"osd-xsrf": "true", "Content-Type": "application/json"}
 S = requests.Session(); S.auth = (USER, PW); S.verify = False
 
 DEMO_TITLES = {"Astronomy Shop", "Astronomy shop - service telemetry"}
-
 GREEN = "#017D73"; RED = "#BD271E"; BLUE = "#0a65c6"; AMBER = "#F5A700"; SLATE = "#343741"
 
 
@@ -84,6 +88,27 @@ def _prom_dataset():
             "timeFieldName": "Time", "dataSource": {}, "signalType": "metrics"}
 
 
+# --- axes / param blocks ----------------------------------------------------
+
+_AX_X = {"position": "bottom", "show": True, "labels": {"show": True, "filter": True, "rotate": 0, "truncate": 100}, "title": {"text": ""}, "grid": {"showLines": False}, "axisRole": "x"}
+_AX_Y = {"position": "left", "show": True, "labels": {"show": True, "filter": True, "rotate": 0, "truncate": 100}, "title": {"text": ""}, "grid": {"showLines": True}, "axisRole": "y"}
+P_PIE = {"addTooltip": True, "addLegend": True, "legendPosition": "right", "legendTitle": "",
+         "tooltipOptions": {"mode": "all"}, "exclusive": {"donut": True, "showValues": True, "showLabels": True, "truncate": 100}}
+P_BARH = {"addLegend": False, "barBorderColor": "#000000", "barBorderWidth": 1, "barPadding": 0.1,
+          "barSizeMode": "auto", "barWidth": 0.7, "legendPosition": "bottom", "legendTitle": "",
+          "showBarBorder": False, "showFullTimeRange": False, "stackMode": "none",
+          "switchAxes": True, "thresholdOptions": {"baseColor": BLUE, "thresholds": [], "thresholdStyle": "off"},
+          "titleOptions": {"show": False, "titleName": ""}, "tooltipOptions": {"mode": "all"}}
+P_LINE = {"addLegend": True, "legendTitle": "", "legendPosition": "bottom", "addTimeMarker": True,
+          "lineStyle": "line", "lineMode": "smooth", "lineWidth": 2, "tooltipOptions": {"mode": "all"},
+          "thresholdOptions": {"baseColor": GREEN, "thresholds": [], "thresholdStyle": "off"},
+          "standardAxes": [_AX_X, _AX_Y], "showFullTimeRange": False}
+P_AREA = {**P_LINE, "stackMode": "stacked"}
+P_TABLE = {"pageSize": 20, "globalAlignment": "left", "showColumnFilter": False, "showFooter": True,
+           "footerCalculations": [], "cellTypes": [], "thresholds": [], "baseColor": "#000000",
+           "dataLinks": [], "visibleColumns": [], "hiddenColumns": []}
+
+
 # --- panel builders ---------------------------------------------------------
 
 def ppl_panel(pid, title, ppl, chart_type, viz_params, axes, span_id):
@@ -119,11 +144,10 @@ def md_panel(pid, markdown):
         "references": []}
 
 
-def metric_params(base=BLUE, thresholds=None, calc="total", text="value", unit=None, solid=True):
+def metric_params(base=BLUE, thresholds=None, calc="total", text="value", unit=None):
     p = {"showTitle": True, "title": "", "showPercentage": False, "valueCalculation": calc,
          "thresholdOptions": {"baseColor": base, "thresholds": thresholds or []},
-         "useThresholdColor": True, "textMode": text,
-         "colorMode": "background_solid" if solid else "background_gradient"}
+         "useThresholdColor": True, "textMode": text, "colorMode": "background_solid"}
     if unit:
         p["unitId"] = unit
     return p
@@ -157,33 +181,45 @@ def state_timeline_params(mappings):
             "standardAxes": [_AX_X, _AX_Y]}
 
 
-_AX_X = {"position": "bottom", "show": True, "labels": {"show": True, "filter": True, "rotate": 0, "truncate": 100}, "title": {"text": ""}, "grid": {"showLines": False}, "axisRole": "x"}
-_AX_Y = {"position": "left", "show": True, "labels": {"show": True, "filter": True, "rotate": 0, "truncate": 100}, "title": {"text": ""}, "grid": {"showLines": True}, "axisRole": "y"}
-P_PIE = {"addTooltip": True, "addLegend": True, "legendPosition": "right", "legendTitle": "",
-         "tooltipOptions": {"mode": "all"}, "exclusive": {"donut": True, "showValues": True, "showLabels": True, "truncate": 100}}
-P_BARH = {"addLegend": False, "barBorderColor": "#000000", "barBorderWidth": 1, "barPadding": 0.1,
-          "barSizeMode": "auto", "barWidth": 0.7, "legendPosition": "bottom", "legendTitle": "",
-          "showBarBorder": False, "showFullTimeRange": False, "stackMode": "none",
-          "switchAxes": True, "thresholdOptions": {"baseColor": BLUE, "thresholds": [], "thresholdStyle": "off"},
-          "titleOptions": {"show": False, "titleName": ""}, "tooltipOptions": {"mode": "all"}}
-P_LINE = {"addLegend": True, "legendTitle": "", "legendPosition": "bottom", "addTimeMarker": True,
-          "lineStyle": "line", "lineMode": "smooth", "lineWidth": 2, "tooltipOptions": {"mode": "all"},
-          "thresholdOptions": {"baseColor": GREEN, "thresholds": [], "thresholdStyle": "off"},
-          "standardAxes": [_AX_X, _AX_Y], "showFullTimeRange": False}
-P_AREA = {**P_LINE, "stackMode": "stacked"}
-P_TABLE = {"pageSize": 20, "globalAlignment": "left", "showColumnFilter": False, "showFooter": True,
-           "footerCalculations": [], "cellTypes": [], "thresholds": [], "baseColor": "#000000",
-           "dataLinks": [], "visibleColumns": [], "hiddenColumns": []}
-
-
-def table_links(ws, span_id, field="field-0"):
-    # Absolute URL — OSD table data-links don't render relative URLs as clickable.
+def table_links(ws, span_id):
     url = (f"{PUBLIC}/w/{ws}/app/explore/traces/traceDetails#/?_a=(dataset:(id:'{span_id}',"
            f"title:'otel-v1-apm-span*',type:'INDEX_PATTERN',timeFieldName:'endTime'),"
            f"traceId:'${{__value.text}}')")
     p = dict(P_TABLE)
     p["dataLinks"] = [{"id": "trace-link", "title": "Open trace", "url": url, "openInNewTab": True, "fields": ["traceId"]}]
     return p
+
+
+def distinct_values(field):
+    """Terms-agg the raw (un-backticked) field so the variable can default to All.
+
+    OSD query-variables reset to the first alphabetical option when `current` is
+    absent; baking every value into `current` (which survives load) is the only
+    way to open on "All". Best-effort: on any failure we return [] and fall back
+    to OSD's first-option default.
+    """
+    raw = field.strip("`")
+    body = {"size": 0, "query": {"bool": {"filter": [{"exists": {"field": raw}}]}},
+            "aggs": {"v": {"terms": {"field": raw, "size": 200}}}}
+    try:
+        r = S.post(f"{OS_URL}/{SPAN_PATTERN}/_search", data=json.dumps(body),
+                   headers={"Content-Type": "application/json"}, timeout=15)
+        buckets = r.json().get("aggregations", {}).get("v", {}).get("buckets", [])
+        return sorted(str(b["key"]) for b in buckets if b.get("key") not in (None, ""))
+    except Exception as e:
+        print(f"  warn: distinct_values({raw}) failed ({e}); variable defaults to first option", file=sys.stderr)
+        return []
+
+
+def query_var(name, label, field, span_id):
+    v = {"name": name, "label": label, "type": "query", "language": "PPL",
+         "query": f"| where {field}!='' | stats count() by {field} | fields {field}",
+         "dataset": _ppl_dataset(span_id), "multi": True, "includeAll": True,
+         "sort": "alphabetical-asc", "useTimeFilter": True}
+    values = distinct_values(field)
+    if values:
+        v["current"] = values  # every value selected == "All" by default
+    return v
 
 
 def dashboard(did, title, layout, variables=None, description=""):
@@ -227,84 +263,106 @@ OP = "`attributes.gen_ai.operation.name`"
 MODEL = "`attributes.gen_ai.request.model`"
 EVN = "`attributes.gen_ai.evaluation.name`"
 EVV = "`attributes.gen_ai.evaluation.score.value`"
+SPAN10 = "span(endTime,10m)"
+NAV_H = 10  # nav/overview panel height; content below is authored against y>=8 and shifted
+
+
+def _shift(layout):
+    """Shift every panel below the nav so a taller nav doesn't overlap them.
+
+    Layouts below are authored assuming an 8-row nav (content starts at y=8);
+    bumping NAV_H taller here keeps a single source of truth for the offset.
+    """
+    dy = NAV_H - 8
+    return [(obj, x, (y + dy if y >= 8 else y), w, h) for (obj, x, y, w, h) in layout]
 
 
 def build(ws, span_id):
     R = "acme-run"; E = "acme-eval"
     P = lambda *a, **k: ppl_panel(*a, span_id=span_id, **k)
+    MF = f"and {MODEL} IN $model"   # model filter (model-bearing panels only)
+    CF = f"and {EVN} IN $check"     # eval-check filter
+
     nav_run = ("### Acme Agent — Run Details\n"
-               "Live health, latency, cost and error triage for the Acme Support Agent, from its "
-               "OpenTelemetry traces. Click any **trace ID** in *Recent error traces* to open the full span waterfall.\n\n"
+               "Live health, latency, cost and error triage for the Acme Support Agent, from its OpenTelemetry traces.\n\n"
+               "**How to use:** filter cost/token panels by **Model** (top-left) · click a **trace ID** in *Recent error traces* "
+               "to open the span waterfall · set the window with the time picker (top-right).\n\n"
                f"**Go to:** [Evals dashboard →]({PUBLIC}/w/{ws}/app/dashboards#/view/acme-agent-evals?{GTIME})"
                f" &nbsp;·&nbsp; [Trace explorer →]({PUBLIC}/w/{ws}/app/agentTraces/traces/#?{GTIME})"
                f" &nbsp;·&nbsp; [Spans →]({PUBLIC}/w/{ws}/app/agentTraces/spans/#?{GTIME})")
     nav_eval = ("### Acme Agent — Evals\n"
-                "Automated eval quality for the Acme Support Agent: pass rate, per-check scores and "
-                "regression trends from `evaluation` spans (correctness, right tool, cost, latency, loops, trajectory).\n\n"
+                "Automated eval quality for the Acme Support Agent: pass rate, per-check scores and regression trends "
+                "from `evaluation` spans (correctness, right tool, cost, latency, loops, trajectory).\n\n"
+                "**How to use:** filter by **Check** (top-left) to focus one metric · watch the trend charts for regressions · "
+                "adjust the time window (top-right).\n\n"
                 f"**Go to:** [Run Details →]({PUBLIC}/w/{ws}/app/dashboards#/view/acme-agent-run-details?{GTIME})"
                 f" &nbsp;·&nbsp; [Trace explorer →]({PUBLIC}/w/{ws}/app/agentTraces/traces/#?{GTIME})")
 
     lat_bands = [{"value": 0, "color": GREEN}, {"value": 5, "color": AMBER}, {"value": 8, "color": RED}]
     run = [
-        (md_panel(f"{R}-nav", nav_run), 0, 0, 48, 6),
+        (md_panel(f"{R}-nav", nav_run), 0, 0, 48, NAV_H),
         # health hero
-        (P(f"{R}-health", "Agent health over time", f"| where {OP}='invoke_agent' | eval svc='acme-support-agent' | stats max(`status.code`) as st by span(endTime,10m), svc", "state_timeline",
+        (P(f"{R}-health", "Agent health over time", f"| where {OP}='invoke_agent' | eval svc='acme-support-agent' | stats max(`status.code`) as st by {SPAN10}, svc", "state_timeline",
            state_timeline_params([{"id": "ok", "type": "value", "value": "0", "displayText": "OK", "color": GREEN},
                                    {"id": "err", "type": "value", "value": "2", "displayText": "Error", "color": RED}]),
-           {"x": "span(endTime,10m)", "y": "svc", "color": "st"}), 0, 6, 48, 8),
-        # KPI row
-        (P(f"{R}-runs", "Agent runs", f"| where {OP}='invoke_agent' | stats count() as runs", "metric", metric_params(BLUE), {"value": ["runs"]}), 0, 14, 9, 8),
+           {"x": SPAN10, "y": "svc", "color": "st"}), 0, 8, 48, 8),
+        # KPI row (trend sparklines via time axis) + gauge
+        (P(f"{R}-runs", "Agent runs", f"| where {OP}='invoke_agent' | stats count() as runs by {SPAN10}", "metric", metric_params(BLUE, calc="total"), {"value": ["runs"], "time": [SPAN10]}), 0, 16, 9, 8),
         (P(f"{R}-success", "Success rate", f"| where {OP}='invoke_agent' | eval ok=if(`status.code`=2,0.0,1.0) | stats avg(ok) as a | eval `success %`=round(a * 100, 1) | fields `success %`", "gauge",
-           gauge_params([{"value": 0, "color": RED}, {"value": 95, "color": AMBER}, {"value": 99, "color": GREEN}]), {"value": ["success %"]}), 9, 14, 12, 8),
-        (P(f"{R}-errrate", "Error rate", f"| where {OP}='invoke_agent' | eval e=if(`status.code`=2,1.0,0.0) | stats avg(e) as a | eval `error %`=round(a * 100, 1) | fields `error %`", "metric", metric_params(RED, unit="percentage"), {"value": ["error %"]}), 21, 14, 9, 8),
-        (P(f"{R}-p95kpi", "P95 latency", f"| where {OP}='invoke_agent' | stats percentile(durationInNanos,95) as p | eval `p95 s`=round(p / 1000000000.0, 2) | fields `p95 s`", "metric", metric_params(GREEN, thresholds=lat_bands, unit="seconds"), {"value": ["p95 s"]}), 30, 14, 9, 8),
-        (P(f"{R}-cost", "Est. cost $", f"| stats sum({IN}) as ti, sum({OUT}) as to | eval `est $`=round(ti / 1000000.0 * 3 + to / 1000000.0 * 15, 3) | fields `est $`", "metric", metric_params(SLATE), {"value": ["est $"]}), 39, 14, 9, 8),
+           gauge_params([{"value": 0, "color": RED}, {"value": 95, "color": AMBER}, {"value": 99, "color": GREEN}]), {"value": ["success %"]}), 9, 16, 12, 8),
+        (P(f"{R}-errrate", "Error rate", f"| where {OP}='invoke_agent' | eval e=if(`status.code`=2,1.0,0.0) | stats avg(e) as a by {SPAN10} | eval `error %`=round(a * 100, 1)", "metric", metric_params(RED, calc="mean", unit="percentage"), {"value": ["error %"], "time": [SPAN10]}), 21, 16, 9, 8),
+        (P(f"{R}-p95kpi", "P95 latency", f"| where {OP}='invoke_agent' | stats percentile(durationInNanos,95) as p by {SPAN10} | eval `p95 s`=round(p / 1000000000.0, 2)", "metric", metric_params(GREEN, thresholds=lat_bands, calc="mean", unit="seconds"), {"value": ["p95 s"], "time": [SPAN10]}), 30, 16, 9, 8),
+        (P(f"{R}-cost", "Est. cost $", f"| where {MODEL}!='' {MF} | stats sum({IN}) as ti, sum({OUT}) as to by {SPAN10} | eval `est $`=round(ti / 1000000.0 * 3 + to / 1000000.0 * 15, 3)", "metric", metric_params(SLATE, calc="total"), {"value": ["est $"], "time": [SPAN10]}), 39, 16, 9, 8),
         # latency
-        (md_panel(f"{R}-h-lat", "### Latency"), 0, 22, 48, 3),
-        (P(f"{R}-p50", "P50 (s)", f"| where {OP}='invoke_agent' | stats percentile(durationInNanos,50) as p | eval s=round(p / 1000000000.0,2) | fields s", "metric", metric_params(BLUE, unit="seconds"), {"value": ["s"]}), 0, 25, 8, 7),
-        (P(f"{R}-p95", "P95 (s)", f"| where {OP}='invoke_agent' | stats percentile(durationInNanos,95) as p | eval s=round(p / 1000000000.0,2) | fields s", "metric", metric_params(BLUE, unit="seconds"), {"value": ["s"]}), 8, 25, 8, 7),
-        (P(f"{R}-p99", "P99 (s)", f"| where {OP}='invoke_agent' | stats percentile(durationInNanos,99) as p | eval s=round(p / 1000000000.0,2) | fields s", "metric", metric_params(BLUE, unit="seconds"), {"value": ["s"]}), 16, 25, 8, 7),
-        (P(f"{R}-latdist", "Latency distribution (s)", f"| where {OP}='invoke_agent' | eval s=round(durationInNanos / 1000000000.0,1) | fields s", "histogram", histogram_params(BLUE), {"x": ["s"]}), 24, 25, 24, 15),
+        (md_panel(f"{R}-h-lat", "### Latency"), 0, 24, 48, 3),
+        (P(f"{R}-p50", "P50 (s)", f"| where {OP}='invoke_agent' | stats percentile(durationInNanos,50) as p by {SPAN10} | eval s=round(p / 1000000000.0,2)", "metric", metric_params(BLUE, calc="mean", unit="seconds"), {"value": ["s"], "time": [SPAN10]}), 0, 27, 8, 7),
+        (P(f"{R}-p95", "P95 (s)", f"| where {OP}='invoke_agent' | stats percentile(durationInNanos,95) as p by {SPAN10} | eval s=round(p / 1000000000.0,2)", "metric", metric_params(BLUE, calc="mean", unit="seconds"), {"value": ["s"], "time": [SPAN10]}), 8, 27, 8, 7),
+        (P(f"{R}-p99", "P99 (s)", f"| where {OP}='invoke_agent' | stats percentile(durationInNanos,99) as p by {SPAN10} | eval s=round(p / 1000000000.0,2)", "metric", metric_params(BLUE, calc="mean", unit="seconds"), {"value": ["s"], "time": [SPAN10]}), 16, 27, 8, 7),
+        (P(f"{R}-latdist", "Latency distribution (s)", f"| where {OP}='invoke_agent' | eval s=round(durationInNanos / 1000000000.0,1) | fields s", "histogram", histogram_params(BLUE), {"x": ["s"]}), 24, 27, 24, 15),
         # cost & tokens
-        (md_panel(f"{R}-h-cost", "### Cost & tokens"), 0, 32, 24, 3),
-        (P(f"{R}-tok-model", "Tokens by model", f"| where {MODEL}!='' | stats sum({TOT}) as tokens by {MODEL} | sort - tokens", "bar", P_BARH, {"x": [MODEL.strip('`')], "y": ["tokens"]}), 0, 35, 24, 15),
-        (P(f"{R}-tok-time", "Tokens in vs out over time", f"| where {TOT} > 0 | stats sum({IN}) as `in`, sum({OUT}) as `out` by span(endTime,10m)", "area", P_AREA, {"x": ["span(endTime,10m)"], "y": ["in", "out"]}), 24, 42, 24, 15),
+        (md_panel(f"{R}-h-cost", "### Cost & tokens"), 0, 34, 24, 3),
+        (P(f"{R}-tok-model", "Tokens by model", f"| where {MODEL}!='' {MF} | stats sum({TOT}) as tokens by {MODEL} | sort - tokens", "bar", P_BARH, {"x": [MODEL.strip('`')], "y": ["tokens"]}), 0, 37, 24, 15),
+        (P(f"{R}-tok-time", "Tokens in vs out over time", f"| where {TOT} > 0 {MF} | stats sum({IN}) as `in`, sum({OUT}) as `out` by {SPAN10}", "area", P_AREA, {"x": [SPAN10], "y": ["in", "out"]}), 24, 42, 24, 15),
         # tools & throughput
-        (md_panel(f"{R}-h-tools", "### Tools & throughput"), 24, 32, 24, 3),
-        (P(f"{R}-tools", "Tool analytics", f"| where {OP}='execute_tool' and isnotnull(`attributes.gen_ai.tool.name`) and `attributes.gen_ai.tool.name`!='' | stats count() as calls, avg(durationInNanos) as d by `attributes.gen_ai.tool.name` | eval `avg ms`=round(d / 1000000.0,2) | fields `attributes.gen_ai.tool.name`, calls, `avg ms` | sort - calls", "table", P_TABLE, {}), 24, 35, 24, 8),
-        (P(f"{R}-throughput", "Throughput (runs / 10m)", f"| where {OP}='invoke_agent' | stats count() as runs by span(endTime,10m)", "line", P_LINE, {"x": ["span(endTime,10m)"], "y": ["runs"]}), 0, 50, 24, 15),
+        (md_panel(f"{R}-h-tools", "### Tools & throughput"), 24, 34, 24, 3),
+        (P(f"{R}-tools", "Tool analytics", f"| where {OP}='execute_tool' and isnotnull(`attributes.gen_ai.tool.name`) and `attributes.gen_ai.tool.name`!='' | stats count() as calls, avg(durationInNanos) as d by `attributes.gen_ai.tool.name` | eval `avg ms`=round(d / 1000000.0,2) | fields `attributes.gen_ai.tool.name`, calls, `avg ms` | sort - calls", "table", P_TABLE, {}), 24, 37, 24, 8),
+        (P(f"{R}-throughput", "Throughput (runs / 10m)", f"| where {OP}='invoke_agent' | stats count() as runs by {SPAN10}", "line", P_LINE, {"x": [SPAN10], "y": ["runs"]}), 0, 52, 24, 15),
         # errors (drill-down)
-        (md_panel(f"{R}-h-err", "### Errors  ·  click a row's trace ID to open the trace"), 0, 65, 48, 3),
-        (P(f"{R}-errtbl", "Recent error traces", f"| where `status.code`=2 | fields traceId, endTime, name, `events.attributes.exception.message` | sort - endTime | head 20", "table", table_links(ws, span_id), {}), 0, 68, 48, 15),
+        (md_panel(f"{R}-h-err", "### Errors  ·  click a row's trace ID to open the trace"), 0, 67, 48, 3),
+        (P(f"{R}-errtbl", "Recent error traces", f"| where `status.code`=2 | fields traceId, endTime, name, `events.attributes.exception.message` | sort - endTime | head 20", "table", table_links(ws, span_id), {}), 0, 70, 48, 15),
         # pipeline (PromQL)
-        (md_panel(f"{R}-h-pipe", "### Telemetry pipeline (PromQL / Prometheus)"), 0, 83, 48, 3),
-        (promql_panel(f"{R}-ingest", "Span ingest vs export rate", "sum(rate(otelcol_receiver_accepted_spans_total[5m])) or sum(rate(otelcol_exporter_sent_spans_total[5m]))", "line", P_LINE, {"x": ["Time"], "y": ["Value"], "color": ["Series"]}), 0, 86, 36, 12),
-        (promql_panel(f"{R}-exfail", "Span export failures", "sum(otelcol_exporter_send_failed_spans_total) or on() vector(0)", "metric", metric_params(RED, calc="last"), {"value": ["Value"], "time": ["Time"]}), 36, 86, 12, 12),
+        (md_panel(f"{R}-h-pipe", "### Telemetry pipeline (PromQL / Prometheus)"), 0, 85, 48, 3),
+        (promql_panel(f"{R}-ingest", "Span ingest vs export rate", "sum(rate(otelcol_receiver_accepted_spans_total[5m])) or sum(rate(otelcol_exporter_sent_spans_total[5m]))", "line", P_LINE, {"x": ["Time"], "y": ["Value"], "color": ["Series"]}), 0, 88, 36, 12),
+        (promql_panel(f"{R}-exfail", "Span export failures", "sum(otelcol_exporter_send_failed_spans_total) or on() vector(0)", "metric", metric_params(RED, calc="last"), {"value": ["Value"], "time": ["Time"]}), 36, 88, 12, 12),
     ]
 
     EV = f"| where {OP}='evaluation'"
     ev = [
-        (md_panel(f"{E}-nav", nav_eval), 0, 0, 48, 6),
-        (P(f"{E}-runs", "Eval runs", f"| where {OP}='invoke_agent' and `attributes.gen_ai.agent.name`='eval_case' | stats count() as `eval runs`", "metric", metric_params(BLUE), {"value": ["eval runs"]}), 0, 6, 12, 8),
-        (P(f"{E}-pass", "Overall pass rate", f"{EV} | stats avg({EVV}) as a | eval `pass %`=round(a * 100, 1) | fields `pass %`", "gauge",
-           gauge_params([{"value": 0, "color": RED}, {"value": 90, "color": AMBER}, {"value": 99, "color": GREEN}]), {"value": ["pass %"]}), 12, 6, 12, 8),
-        (P(f"{E}-fails", "Failed checks", f"{EV} and {EVV} < 1 | stats count() as fails", "metric", metric_params(RED), {"value": ["fails"]}), 24, 6, 12, 8),
-        (P(f"{E}-events", "Score events", f"{EV} | stats count() as events", "metric", metric_params(SLATE), {"value": ["events"]}), 36, 6, 12, 8),
-        (md_panel(f"{E}-h-quality", "### Quality by check"), 0, 14, 48, 3),
-        (P(f"{E}-bargauge", "Pass rate by check", f"{EV} | stats avg({EVV}) as score by {EVN} | sort - score", "bar_gauge",
-           bargauge_params([{"value": 0, "color": RED}, {"value": 0.9, "color": AMBER}, {"value": 0.99, "color": GREEN}]), {"x": [EVN.strip('`')], "y": ["score"]}), 0, 17, 24, 15),
-        (P(f"{E}-failbymetric", "Failing checks by metric", f"{EV} and {EVV} < 1 | stats count() as fails by {EVN} | sort - fails", "bar", P_BARH, {"x": [EVN.strip('`')], "y": ["fails"]}), 24, 17, 24, 15),
-        (md_panel(f"{E}-h-trend", "### Score & failure trend"), 0, 32, 48, 3),
-        (P(f"{E}-time", "Avg score over time", f"{EV} | stats avg({EVV}) as score by span(endTime,10m), {EVN}", "line", P_LINE, {"x": ["span(endTime,10m)"], "y": ["score"], "color": [EVN.strip('`')]}), 0, 35, 24, 15),
-        (P(f"{E}-failtime", "Failing checks over time", f"{EV} and {EVV} < 1 | stats count() as fails by span(endTime,10m), {EVN}", "area", P_AREA, {"x": ["span(endTime,10m)"], "y": ["fails"], "color": [EVN.strip('`')]}), 24, 35, 24, 15),
-        (md_panel(f"{E}-h-tbl", "### Failing checks"), 0, 50, 48, 3),
-        (P(f"{E}-failtbl", "Failing checks by metric", f"{EV} and {EVV} < 1 | stats count() as fails by {EVN} | sort - fails", "table", P_TABLE, {}), 0, 53, 48, 12),
+        (md_panel(f"{E}-nav", nav_eval), 0, 0, 48, NAV_H),
+        (P(f"{E}-runs", "Eval runs", f"| where {OP}='invoke_agent' and `attributes.gen_ai.agent.name`='eval_case' | stats count() as runs by {SPAN10}", "metric", metric_params(BLUE, calc="total"), {"value": ["runs"], "time": [SPAN10]}), 0, 8, 12, 8),
+        (P(f"{E}-pass", "Overall pass rate", f"{EV} {CF} | stats avg({EVV}) as a | eval `pass %`=round(a * 100, 1) | fields `pass %`", "gauge",
+           gauge_params([{"value": 0, "color": RED}, {"value": 90, "color": AMBER}, {"value": 99, "color": GREEN}]), {"value": ["pass %"]}), 12, 8, 12, 8),
+        (P(f"{E}-fails", "Failed checks", f"{EV} {CF} and {EVV} < 1 | stats count() as fails by {SPAN10}", "metric", metric_params(RED, calc="total"), {"value": ["fails"], "time": [SPAN10]}), 24, 8, 12, 8),
+        (P(f"{E}-events", "Score events", f"{EV} {CF} | stats count() as events by {SPAN10}", "metric", metric_params(SLATE, calc="total"), {"value": ["events"], "time": [SPAN10]}), 36, 8, 12, 8),
+        (md_panel(f"{E}-h-quality", "### Quality by check"), 0, 16, 48, 3),
+        (P(f"{E}-bargauge", "Pass rate by check", f"{EV} {CF} | stats avg({EVV}) as score by {EVN} | sort - score", "bar_gauge",
+           bargauge_params([{"value": 0, "color": RED}, {"value": 0.9, "color": AMBER}, {"value": 0.99, "color": GREEN}]), {"x": [EVN.strip('`')], "y": ["score"]}), 0, 19, 24, 15),
+        (P(f"{E}-failbymetric", "Failing checks by metric", f"{EV} {CF} and {EVV} < 1 | stats count() as fails by {EVN} | sort - fails", "bar", P_BARH, {"x": [EVN.strip('`')], "y": ["fails"]}), 24, 19, 24, 15),
+        (md_panel(f"{E}-h-trend", "### Score & failure trend"), 0, 34, 48, 3),
+        (P(f"{E}-time", "Avg score over time", f"{EV} {CF} | stats avg({EVV}) as score by {SPAN10}, {EVN}", "line", P_LINE, {"x": [SPAN10], "y": ["score"], "color": [EVN.strip('`')]}), 0, 37, 24, 15),
+        (P(f"{E}-failtime", "Failing checks over time", f"{EV} {CF} and {EVV} < 1 | stats count() as fails by {SPAN10}, {EVN}", "area", P_AREA, {"x": [SPAN10], "y": ["fails"], "color": [EVN.strip('`')]}), 24, 37, 24, 15),
+        (md_panel(f"{E}-h-tbl", "### Failing checks"), 0, 52, 48, 3),
+        (P(f"{E}-failtbl", "Failing checks by metric", f"{EV} {CF} and {EVV} < 1 | stats count() as fails by {EVN} | sort - fails", "table", P_TABLE, {}), 0, 55, 48, 12),
     ]
 
-    d1 = dashboard("acme-agent-run-details", "Acme Agent - Run Details", run,
-                   description="Live health, latency, cost and error triage for the Acme Support Agent, from OpenTelemetry traces (otel-v1-apm-span*). Trace IDs in the error table deep-link to the span waterfall.")
-    d2 = dashboard("acme-agent-evals", "Acme Agent - Evals", ev,
-                   description="Automated eval quality for the Acme Support Agent: pass rate, per-check scores and regression trends from evaluation spans.")
+    run = _shift(run)
+    ev = _shift(ev)
+    run_vars = [query_var("model", "Model", MODEL, span_id)]
+    eval_vars = [query_var("check", "Eval check", EVN, span_id)]
+    d1 = dashboard("acme-agent-run-details", "Acme Agent - Run Details", run, variables=run_vars,
+                   description="Live health, latency, cost and error triage for the Acme Support Agent, from OpenTelemetry traces (otel-v1-apm-span*). Filter by model; trace IDs deep-link to the span waterfall.")
+    d2 = dashboard("acme-agent-evals", "Acme Agent - Evals", ev, variables=eval_vars,
+                   description="Automated eval quality for the Acme Support Agent: pass rate, per-check scores and regression trends from evaluation spans. Filter by check.")
     objs = [o for (o, *_g) in run] + [o for (o, *_g) in ev]
     return objs, [d1, d2]
 

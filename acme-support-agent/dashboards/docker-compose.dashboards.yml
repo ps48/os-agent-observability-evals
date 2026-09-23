@@ -25,6 +25,7 @@ services:
         condition: service_completed_successfully
     environment:
       - OSD_BASE_URL=http://opensearch-dashboards:5601
+      - OPENSEARCH_URL=https://opensearch:9200
       - OSD_USER=${OPENSEARCH_USER:-admin}
       - OSD_PASSWORD=${OPENSEARCH_PASSWORD:-My_password_123!@#}
       - WORKSPACE_NAME=Observability Stack
