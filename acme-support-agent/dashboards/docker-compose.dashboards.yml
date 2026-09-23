@@ -1,0 +1,37 @@
+# Compose override: install the two Acme agent dashboards and skip the stack's
+# demo dashboards, so OpenSearch Dashboards shows only what this tutorial needs.
+#
+# Run from the observability-stack submodule directory, layered on its compose:
+#   cd observability-stack
+#   docker compose -f docker-compose.yml \
+#     -f ../acme-support-agent/dashboards/docker-compose.dashboards.yml up -d
+#
+# Relative paths resolve from the project dir (observability-stack/), so the
+# ../acme-support-agent path points back into this repo.
+
+services:
+  # Don't provision the bundled Flights + viz-demo sample dashboards.
+  opensearch-dashboards-init:
+    environment:
+      - INSTALL_VISUALIZATION_SAMPLES=false
+
+  # After the stack's init has created the index patterns + Prometheus data
+  # connection, install our dashboards and remove the demo ones.
+  acme-dashboards-init:
+    image: python:3.11-alpine
+    container_name: acme-dashboards-init
+    depends_on:
+      opensearch-dashboards-init:
+        condition: service_completed_successfully
+    environment:
+      - OSD_BASE_URL=http://opensearch-dashboards:5601
+      - OSD_USER=${OPENSEARCH_USER:-admin}
+      - OSD_PASSWORD=${OPENSEARCH_PASSWORD:-My_password_123!@#}
+      - WORKSPACE_NAME=Observability Stack
+      - SPAN_PATTERN=otel-v1-apm-span*
+    volumes:
+      - ../acme-support-agent/dashboards/acme-dashboards-init.py:/acme-dashboards-init.py:ro
+    command: sh -c "pip install --quiet requests && python -u /acme-dashboards-init.py"
+    restart: "no"
+    networks:
+      - observability-stack-network
