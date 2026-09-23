@@ -53,7 +53,12 @@ OSD_BASE_URL=http://localhost:5601 python acme-support-agent/dashboards/acme-das
 ```
 
 Env: `OSD_BASE_URL`, `OSD_USER` (default `admin`), `OSD_PASSWORD`, `WORKSPACE_NAME`
-(default `Observability Stack`), `SPAN_PATTERN` (default `otel-v1-apm-span*`).
+(default `Observability Stack`), `SPAN_PATTERN` (default `otel-v1-apm-span*`), and
+**`OSD_PUBLIC_URL`** — the browser-facing base used for the nav links and the
+error-table **trace-ID drill-down** (data-links require an absolute URL). Defaults to
+`http://localhost:5601`; set it to your published URL when serving remotely, e.g.
+`OSD_PUBLIC_URL=https://my-host python .../acme-dashboards-init.py`. Nav links carry the
+`now-24h` time range across to the Agent Traces app.
 
 ## Demo data (fault injection)
 
