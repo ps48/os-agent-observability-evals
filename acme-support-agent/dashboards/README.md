@@ -7,11 +7,13 @@ teams already know — Arize/Phoenix, Braintrust, LangSmith, Langfuse — but ex
 the PPL/PromQL `explore` framework:
 
 - **Acme Agent — Run Details** — live health, latency, cost, and error triage.
-- **Acme Agent — Evals** — automated eval quality: pass rate, per-check scores, trends.
+- **Acme Agent — Evals** — eval quality: pass rate, per-check + per-case scores, trends,
+  run-vs-run experiment comparison, and online-vs-offline split.
 
 Both open with an **overview block** (what the dashboard is, how to use it, and links to
-its sibling + the Agent Traces explorer), a **filter variable** (Model / Check) that
-defaults to *All*, and KPI cards that show a **trend sparkline** behind the big number.
+its sibling + the Agent Traces explorer), **filter variables** (Model on Run Details;
+Check / Experiment / Mode on Evals) that default to *All*, and KPI cards that show a
+**trend sparkline** behind the big number.
 
 ![Run Details](../../images/dashboard-run-details.png)
 ![Evals](../../images/dashboard-evals.png)
@@ -38,28 +40,37 @@ defaults to *All*, and KPI cards that show a **trend sparkline** behind the big 
 
 ## Acme Agent — Evals
 
-Two grains of data drive this dashboard: **case-level** panels read the per-case rollup
-(`eval_case_score` / `eval_passed` / `eval_question`) on the `eval_case` `invoke_agent` span;
-**check-level** panels read the individual `evaluation` spans (`evaluation.name` / `.score.value`)
-and honor the **Check** filter.
+Every panel reads one source — the `evaluation` spans — and applies **all three** filter
+variables (**Check**, **Experiment**, **Mode**), so the variables govern the whole dashboard.
+Each `evaluation` span carries `evaluation.name` + `.score.value` plus `eval_question`,
+`test.suite.run.id` (a run), `test.suite.name` (the experiment) and `eval_mode`
+(`offline` suite vs `online` sampled traffic), attached by `evals/run_evals.py` and
+`evals/online.py`. A **case-run is one trace**, so `traceId` is the per-case-run key used for
+pass/fail rollups; `eval_question` is the readable case label.
 
-| Panel | Answers | Chart | Query source |
+Picking a single **Check** recomputes the case-level numbers (Mean/Min score, pass/fail) over
+just that check.
+
+| Panel | Answers | Chart | Query (over `evaluation` spans) |
 |---|---|---|---|
-| Total cases | How many eval cases ran? | metric + sparkline | `count()` of `eval_case` spans by bucket |
-| Cases passed | How many cases passed every check? | metric + sparkline | `count()` where `eval_passed=1` by bucket |
-| Mean judge score | Average per-case score | metric + sparkline | `avg(eval_case_score)` by bucket |
-| Min judge score | Worst case in the window | metric | `min(eval_case_score)` |
-| Overall pass rate | Aggregate check quality (**Check**-filtered) | gauge | `avg(evaluation.score.value)` |
-| Outcome breakdown | Passed vs failed mix | donut (pie) | `count()` by `passed`/`failed` |
-| Judge score by case | Which question scores worst | bar | `avg(eval_case_score)` by `eval_question` |
-| Pass rate by check | Which criterion is weakest (**Check**-filtered) | `bar_gauge` | `avg(score)` by `evaluation.name`, threshold-colored |
-| Failing checks by metric | Where failures concentrate (**Check**-filtered) | bar | `count()` where score `< 1` by `evaluation.name` |
-| Mean judge score trend | Quality over time | line | `avg(eval_case_score)` by bucket |
-| Cases passed / 10m | Passing throughput | line | `count()` where `eval_passed=1` by bucket |
-| Per-case score over runs | Per-question regression trend | multi-line | `avg(eval_case_score)` by bucket, `eval_question` |
-| Failing checks over time | Failure trend (**Check**-filtered) | stacked area | `count()` where score `< 1` by bucket, `evaluation.name` |
-| Per-case detail | Score, latency, model, tool per case | table | `eval_case` spans: `eval_question`, score, duration, model, `expected_tool` |
-| Failing checks | The failing criteria, ranked (**Check**-filtered) | table | `count()` where score `< 1` by `evaluation.name` |
+| Total cases | How many case-runs? | metric + sparkline | `distinct_count(traceId)` by bucket |
+| Cases passed | How many case-runs passed every selected check? | metric + sparkline | `min(score) by traceId,bucket \| where m>=1 \| count() by bucket` |
+| Mean judge score | Average score over selected checks | metric + sparkline | `avg(score)` by bucket |
+| Min judge score | Worst score in the window | metric | `min(score)` |
+| Overall pass rate | Aggregate check quality | gauge | `avg(score)` |
+| Outcome breakdown | Passed vs failed case-runs | donut (pie) | `min(score) by traceId` → `passed`/`failed` → `count()` |
+| Judge score by case | Which question scores worst | bar | `avg(score)` by `eval_question` |
+| Pass rate by check | Which criterion is weakest | `bar_gauge` | `avg(score)` by `evaluation.name`, threshold-colored |
+| Failing checks by metric | Where failures concentrate | bar | `count()` where score `< 1` by `evaluation.name` |
+| Mean judge score trend | Quality over time | line | `avg(score)` by bucket |
+| Cases passed / 10m | Passing throughput | line | passing case-runs by bucket |
+| Per-case score over runs | Per-question regression trend | multi-line | `avg(score)` by bucket, `eval_question` |
+| Failing checks over time | Failure trend | stacked area | `count()` where score `< 1` by bucket, `evaluation.name` |
+| Mean score by run | Run-vs-run (experiment) comparison | bar | `avg(score)` by `test.suite.run.id` |
+| Eval volume by mode | Offline suite vs online sampling over time | stacked area | `count()` by bucket, `eval_mode` |
+| Per-case detail | Score + failing-check count per case | table | `avg(score)`, `sum(score<1)`, `count()` by `eval_question` |
+| Failing checks | The failing criteria, ranked | table | `count()` where score `< 1` by `evaluation.name` |
+| Recent failing evals | The 20 latest failing checks — **click a trace ID to open the run** | table + data-link | score `< 1`: `eval_question`, check, score, `traceId` |
 
 ## How to read it
 
@@ -68,23 +79,24 @@ and honor the **Check** filter.
 - **Gauges vs sparkline cards** — deliberate contrast. Gauges (success rate, pass rate) show
   *current health* against thresholds; the KPI cards show a *trend* (the sparkline behind the
   number is the same metric bucketed over the window).
-- **Filter variables** — the **Model** (Run Details) and **Check** (Evals) dropdowns default to
-  *All*. Selecting one value scopes the model/cost/token panels (Model) or the check-level eval
-  panels (Check). The **case-level** eval panels (Total cases, Cases passed, Mean/Min judge score,
-  outcome donut, judge-score-by-case, the case trends and per-case table) stay unfiltered on
-  purpose — those spans carry `eval_question`, not `evaluation.name`. Likewise the Run Details
-  health/latency/tool/pipeline panels are unfiltered, since those spans carry no `request.model`.
-- **Trace drill-down** — in *Recent error traces*, the `traceId` column is a data-link to the
-  span waterfall in the Agent Traces app (opens in a new tab). Nav links and the drill-down
+- **Filter variables** — **Model** (Run Details) and **Check / Experiment / Mode** (Evals) all
+  default to *All*. On Evals every panel obeys all three; picking one **Check** recomputes the
+  case-level Mean/Min score and pass/fail over just that check, **Experiment** isolates one run of
+  the suite (for run-vs-run comparison), and **Mode** splits the offline suite from online sampled
+  traffic. On Run Details the **Model** filter scopes only the model-bearing cost/token panels; the
+  health/latency/tool/pipeline panels carry no `request.model`, so they stay unfiltered.
+- **Trace drill-down** — in *Recent error traces* (Run Details) and *Recent failing evals* (Evals),
+  the `traceId` column is a data-link into the **Agent Traces** trace-detail waterfall (opens in a
+  new tab). Nav links and the drill-down
   carry the `now-24h` window across.
 
 ## Install (auto-load on stack start)
 
 `acme-dashboards-init.py` resolves the live `otel-v1-apm-span*` index-pattern id and the
 `ObservabilityStack_Prometheus` data connection at runtime, removes the stack's demo dashboards
-(Astronomy shop + service telemetry), queries the distinct Model / Check values so the filter
-variables default to *All*, and creates the two dashboards (idempotent — fixed object ids,
-`overwrite=true`).
+(Astronomy shop + service telemetry), queries the distinct Model / Check / Experiment / Mode
+values so the filter variables default to *All*, and creates the two dashboards (idempotent —
+fixed object ids, `overwrite=true`).
 
 Bring the stack up with the override so it runs automatically after the stack's own
 Dashboards init:
@@ -154,15 +166,31 @@ run the agent over time.
   init refreshes that list as new models / checks appear.
 - Token fields are cast (`cast(... as int)`) in PPL sums, matching `verify/queries.md`.
 - The dashboards read `endTime` as the time field for the span index pattern.
-- **Case-level eval panels** need the per-case rollup (`eval_case_score` / `eval_passed`)
-  that `evals/run_evals.py` attaches to the `eval_case` span — re-run the evals (or
-  `demo-data.sh`) after pulling this change so those fields exist.
+- **Eval attributes:** the Evals dashboard needs `eval_question`, `test.suite.run.id`,
+  `test.suite.name`, `eval_mode` (and score) on the `evaluation` spans — attached by
+  `evals/run_evals.py` (offline) and `evals/online.py` (online). Re-run the evals or
+  `demo-data.sh` after pulling this change so those fields exist.
+- **Online vs offline:** `run_evals.py` scores the full dataset against golden answers
+  (`eval_mode=offline`); a sampled fraction of live `acme.run` turns scores the reference-free
+  checks (latency/cost) with `eval_mode=online` when `ACME_ONLINE_EVAL_RATE>0` (the hook lives in
+  `acme/agent.py`, in-span so scores attach to the live trace). `demo-data.sh` drives both.
+- **Experiments:** each `run_evals` invocation mints a `test.suite.run.id`; set `ACME_EXPERIMENT`
+  to label a run (default `<framework>@<model>`). The "Mean score by run" panel + Experiment
+  filter compare runs (v1 vs v2).
+- **Mock models:** in mock mode each turn picks one of a few real Bedrock model IDs (random), so
+  the Model filter has variety; pin one with `ACME_MODEL`.
 - **Rollover gotcha:** if Data Prepper rolls the span index over to a fresh empty
   `otel-v1-apm-span-00000N`, its template maps `events.attributes` as a scalar while the
   populated index has it as an object — the mismatch makes wildcard PPL fail to plan
   (`UnsupportedOperationException` at the analyzing stage) and every panel shows an error.
-  A single demo run won't trigger a rollover; if you hit it, delete the empty index
-  (`DELETE otel-v1-apm-span-00000N`) so the `otel-v1-apm-span*` pattern resolves cleanly.
-- **Scoped out** (not expressible in a static PPL/PromQL dashboard): run-vs-run experiment
-  diffing, human-annotation queues, drift detection (needs the Anomaly Detection / Alerting
-  plugins), and the span waterfall itself — which the linked **Agent Traces app** provides.
+  A single demo run won't trigger a rollover. If you hit it, **do not just delete the empty
+  index** — it is the alias's *write index*, and deleting it makes Data Prepper drop every new
+  span (`no write index is defined for alias [otel-v1-apm-span]`). Instead point the alias's
+  write flag back at the populated index, then delete the empty one:
+  ```
+  POST _aliases {"actions":[{"add":{"index":"otel-v1-apm-span-000001","alias":"otel-v1-apm-span","is_write_index":true}}]}
+  DELETE otel-v1-apm-span-00000N
+  ```
+- **Scoped out** (not expressible in a static PPL/PromQL dashboard): human-annotation queues,
+  drift detection (needs the Anomaly Detection / Alerting plugins), and the span waterfall
+  itself — which the linked **Agent Traces app** provides.

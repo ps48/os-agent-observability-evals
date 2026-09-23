@@ -15,6 +15,8 @@ telemetry for demos.
 
 from __future__ import annotations
 
+import os
+import random
 import re
 import time
 
@@ -26,6 +28,19 @@ from ..faults import active_faults
 _ORDER_HINT_RE = re.compile(r"order")
 _NUMBER_RE = re.compile(r"\d{3,}")
 _SKU_RE = re.compile(r"[A-Z]{2,}-[A-Z0-9]+")
+
+# Offline mode picks one of these per turn so the dashboards' Model filter has
+# variety (real Bedrock model IDs, so the demo looks like a multi-model fleet).
+_MOCK_MODELS = [
+    "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "us.anthropic.claude-3-5-haiku-20241022-v1:0",
+    "amazon.titan-text-express-v1",
+]
+
+
+def _pick_mock_model() -> str:
+    """One mock model per turn. ACME_MODEL pins a single model when set."""
+    return os.environ.get("ACME_MODEL") or random.choice(_MOCK_MODELS)
 
 
 def _route_and_call(question: str) -> tuple[str, dict]:
@@ -70,7 +85,7 @@ def _answer_from(tool_name: str, result: dict, question: str) -> str:
     return result["answer"]
 
 
-def _record_nominal(question: str, answer: str) -> None:
+def _record_nominal(question: str, answer: str, model: str) -> None:
     """Deterministic token accounting so cost/token panels have data offline.
 
     Feeds the in-process counter (for the eval cost check) *and* enriches the
@@ -81,17 +96,17 @@ def _record_nominal(question: str, answer: str) -> None:
     inp = len(question) * 3 + 400
     out = len(answer) * 3 + 40
     record_usage(inp, out)
-    enrich(model="mock", input_tokens=inp, output_tokens=out)
+    enrich(model=model, input_tokens=inp, output_tokens=out)
 
 
 @observe(op=Op.CHAT, name="mock-chat")
-def _mock_chat(question: str, faults: frozenset = frozenset()) -> str:
+def _mock_chat(question: str, faults: frozenset = frozenset(), model: str = "mock") -> str:
     """The mock "model turn" — deterministic routing + answer synthesis."""
     # wrong: call the wrong tool and return a non-answer (fails correctness/right_tool/trajectory).
     if "wrong" in faults:
         TOOL_FUNCTIONS["search_policy"](question)
         answer = "I'm not sure about that — please contact Acme support."
-        _record_nominal(question, answer)
+        _record_nominal(question, answer, model)
         return answer
 
     tool_name, result = _route_and_call(question)
@@ -102,13 +117,14 @@ def _mock_chat(question: str, faults: frozenset = frozenset()) -> str:
             _route_and_call(question)
 
     answer = _answer_from(tool_name, result, question)
-    _record_nominal(question, answer)
+    _record_nominal(question, answer, model)
     return answer
 
 
 def run_turn(question: str, history: list[dict]) -> str:
     """Offline drop-in for the real framework adapters' run_turn."""
-    enrich(model="mock", provider="mock")
+    model = _pick_mock_model()
+    enrich(model=model, provider="aws.bedrock")
     faults = frozenset(active_faults())
 
     if "error" in faults:
@@ -117,6 +133,6 @@ def run_turn(question: str, history: list[dict]) -> str:
         time.sleep(9)  # breach LATENCY_BUDGET_S (8s)
     if "cost" in faults:
         record_usage(5200, 900)  # exceed TOKEN_BUDGET (4000)
-        enrich(model="mock", input_tokens=5200, output_tokens=900)  # show the blowup in token panels
+        enrich(model=model, input_tokens=5200, output_tokens=900)  # show the blowup in token panels
 
-    return _mock_chat(question, faults)
+    return _mock_chat(question, faults, model)

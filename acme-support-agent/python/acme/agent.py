@@ -8,8 +8,13 @@ tutorial — observe, evaluate, monitor — hangs off of.
 
 from __future__ import annotations
 
+import os
+import random
+import time
+
 from .observability import observe, enrich, Op
 from .frameworks import get_adapter
+from .usage import reset_usage, get_usage
 
 
 # name= on an INVOKE_AGENT span sets gen_ai.agent.name.
@@ -26,5 +31,18 @@ def handle_support_question(
     emitted by the framework adapter and the @observe-decorated tools.
     """
     enrich(session_id=conversation_id)  # session_id -> gen_ai.conversation.id
+    reset_usage()                       # isolate per-turn token usage
     run_turn = get_adapter(framework)
-    return run_turn(question, history or [])
+
+    start = time.time()
+    answer = run_turn(question, history or [])
+
+    # Blog Part 7: online evaluation on a sampled fraction of live traffic.
+    # score() here runs while this invoke_agent span is still active, so the
+    # online scores attach to the live trace. Off unless ACME_ONLINE_EVAL_RATE>0.
+    rate = float(os.environ.get("ACME_ONLINE_EVAL_RATE", "0") or 0)
+    if rate > 0 and random.random() < rate:
+        from evals.online import score_online  # lazy import avoids an acme<->evals cycle
+        score_online(question, answer, time.time() - start, get_usage()["total_tokens"])
+
+    return answer

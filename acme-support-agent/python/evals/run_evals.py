@@ -12,7 +12,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import datetime
+import os
 import time
+import uuid
 
 from acme.observability import setup_observability, observe, enrich, score, Op
 from acme.agent import handle_support_question
@@ -23,8 +26,21 @@ from .dataset import full_dataset, EvalCase
 from . import criteria
 
 
+DATASET_NAME = "acme-golden-v1"   # benchmark dataset id (name + version)
+
 # We track which tools got called per case by wrapping the tool registry.
 _called_tools: list[str] = []
+
+
+def _make_run_ctx(framework: str | None) -> dict:
+    """Identity for one offline eval run (Blog Part 6/8: experiments over a dataset).
+
+    A run is one execution of the suite. The experiment groups comparable runs
+    (e.g. a prompt/model version); set ACME_EXPERIMENT to label your own.
+    """
+    run_id = "run-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
+    experiment = os.environ.get("ACME_EXPERIMENT") or f"{framework or 'native'}@{os.environ.get('ACME_MODEL', 'mock')}"
+    return {"run_id": run_id, "experiment": experiment, "dataset": DATASET_NAME}
 
 
 def _instrument_tool_tracking():
@@ -43,7 +59,7 @@ def _instrument_tool_tracking():
 
 
 @observe(op=Op.INVOKE_AGENT, name="eval_case")
-def run_case(case: EvalCase, framework: str | None) -> dict:
+def run_case(case: EvalCase, framework: str | None, run_ctx: dict) -> dict:
     """Run one eval case and score it. Scores are attached to this span."""
     _called_tools.clear()
     reset_usage()
@@ -69,21 +85,34 @@ def run_case(case: EvalCase, framework: str | None) -> dict:
     actual_traj = ["invoke_agent", *_called_tools]
     trajectory_match = 1.0 if actual_traj[: len(case.golden_trajectory)] == case.golden_trajectory else 0.0
 
-    # attach every score to the trace
-    score(name="answer_correctness", value=correctness)
-    score(name="right_tool", value=right_tool)
-    score(name="trajectory_match", value=trajectory_match)
-    score(name="latency_ok", value=latency_ok)
-    score(name="no_loops", value=no_loops)
-    score(name="cost", value=cost_ok)
+    checks = {
+        "answer_correctness": correctness, "right_tool": right_tool,
+        "trajectory_match": trajectory_match, "latency_ok": latency_ok,
+        "no_loops": no_loops, "cost": cost_ok,
+    }
+    case_passed = all(checks.values())
 
-    # roll the per-case result onto the eval_case span so dashboards can key
-    # case-level panels (per-case score / pass rate / outcome mix) off the
-    # readable question rather than joining across spans by trace id.
-    checks = [correctness, right_tool, trajectory_match, latency_ok, no_loops, cost_ok]
-    case_passed = all(checks)
-    enrich(eval_case_score=round(sum(checks) / len(checks), 3),
-           eval_passed=1 if case_passed else 0)
+    # Attach every score to the trace, tagged with the case label + run/experiment/
+    # dataset identity (test.* semconv) + eval_mode, so every dashboard panel can
+    # filter by check / experiment / mode and compare runs. (Blog Part 6/8.)
+    common = {
+        "eval_question": case.question,
+        "test.suite.run.id": run_ctx["run_id"],
+        "test.suite.name": run_ctx["experiment"],
+        "test.case.id": case.case_id,
+        "test.case.result.status": "pass" if case_passed else "fail",
+        "dataset": run_ctx["dataset"],
+        "eval_mode": "offline",
+    }
+    for cname, cval in checks.items():
+        score(name=cname, value=cval, attributes=common)
+
+    # Also tag the eval_case span with the run identity (kept for convenience;
+    # the dashboards key case-level panels off the evaluation spans above).
+    enrich(eval_case_score=round(sum(checks.values()) / len(checks), 3),
+           eval_passed=1 if case_passed else 0,
+           **{"test.suite.run.id": run_ctx["run_id"], "test.suite.name": run_ctx["experiment"],
+              "eval_mode": "offline"})
 
     return {
         "question": case.question,
@@ -108,8 +137,10 @@ def main() -> None:
     setup_observability()
     _instrument_tool_tracking()
 
+    run_ctx = _make_run_ctx(args.framework)
+    print(f"  run_id={run_ctx['run_id']}  experiment={run_ctx['experiment']}  dataset={run_ctx['dataset']}")
     dataset = full_dataset()
-    results = [run_case(c, args.framework) for c in dataset]
+    results = [run_case(c, args.framework, run_ctx) for c in dataset]
 
     # --- summary ---
     passed = sum(r["passed"] for r in results)

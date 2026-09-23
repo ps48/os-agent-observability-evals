@@ -417,8 +417,10 @@ tools teams already know (Arize/Phoenix, Braintrust, LangSmith, Langfuse):
   **Model** filter scopes the cost/token panels.
 - **Acme Agent — Evals** — case-level KPI cards (total cases, cases passed, mean / min judge
   score) plus a pass-rate gauge, an outcome-breakdown donut, judge-score-by-case bars, a per-check
-  pass-rate `bar_gauge`, score/failure trend lines (including per-case-over-runs), and per-case +
-  failing-check tables. A **Check** filter focuses the check-level panels.
+  pass-rate `bar_gauge`, score/failure trend lines (including per-case-over-runs), a run-vs-run
+  **experiment comparison**, an **online-vs-offline** volume split, and per-case + failing-check
+  tables with a trace-ID drill-down to the failing run. **Check**, **Experiment** and **Mode**
+  filters govern every panel.
 
 ![Acme Agent — Run Details dashboard](images/dashboard-run-details.png)
 

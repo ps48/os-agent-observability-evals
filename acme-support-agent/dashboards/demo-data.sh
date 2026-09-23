@@ -33,6 +33,15 @@ for f in slow loop wrong cost; do
   ACME_FAULT=$f "$PY" -m evals.run_evals >/dev/null 2>&1
 done
 
+echo "== extra experiment runs (for run-vs-run comparison) =="
+for exp in prompt-v1 prompt-v2; do
+  ACME_EXPERIMENT=$exp "$PY" -m evals.run_evals >/dev/null 2>&1 && echo "  ran experiment $exp"
+done
+
+echo "== online evals on sampled live traffic (eval_mode=online) =="
+for q in "${Q[@]}"; do ACME_ONLINE_EVAL_RATE=1 "$PY" -m acme.run "$q" >/dev/null 2>&1; done
+echo "  online eval traffic emitted"
+
 # Cosmetic demo aid: the generator emits every trace "now", which piles all points
 # into one time bucket and leaves the trend charts + KPI sparklines flat. Spread each
 # trace deterministically across the last ~6h (by a hash of its traceId, preserving

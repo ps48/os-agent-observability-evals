@@ -11,7 +11,14 @@ an empty list (run it against your own stack to harvest real cases).
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
+
+
+def _slug(text: str) -> str:
+    """Stable, readable case id from the question (test.case.id)."""
+    s = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    return s[:48] or "case"
 
 
 @dataclass
@@ -21,6 +28,11 @@ class EvalCase:
     expected_answer_substring: str     # what a correct answer must contain
     golden_trajectory: list[str] = field(default_factory=list)  # expected op/tool sequence
     conversation_id: str = "eval"
+    case_id: str = ""                  # stable id (test.case.id); derived from the question if unset
+
+    def __post_init__(self):
+        if not self.case_id:
+            self.case_id = _slug(self.question)
 
 
 # Hand-written golden cases. The order-status case is the canonical golden path

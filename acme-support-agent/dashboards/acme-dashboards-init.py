@@ -22,7 +22,7 @@ Env:
   OSD_PUBLIC_URL browser-facing base for nav links + trace drill-down (default http://localhost:5601)
 """
 from __future__ import annotations
-import json, os, sys, time
+import json, os, sys, time, uuid
 import urllib3, requests
 urllib3.disable_warnings()
 
@@ -39,7 +39,11 @@ H = {"osd-xsrf": "true", "Content-Type": "application/json"}
 S = requests.Session(); S.auth = (USER, PW); S.verify = False
 
 DEMO_TITLES = {"Astronomy Shop", "Astronomy shop - service telemetry"}
-GREEN = "#017D73"; RED = "#BD271E"; BLUE = "#0a65c6"; AMBER = "#F5A700"; SLATE = "#343741"
+# Grafana modern/default palette (drives thresholds + base colors on every
+# metric/gauge/bar/bar_gauge/histogram/state_timeline panel). Multi-series
+# line/area charts fall back to the echarts palette — the explore viz exposes
+# no per-series color list.
+GREEN = "#73BF69"; RED = "#F2495C"; BLUE = "#5794F2"; AMBER = "#FF9830"; SLATE = "#B877D9"
 
 
 def _req(method, path, **kw):
@@ -137,7 +141,7 @@ def promql_panel(pid, title, promql, chart_type, viz_params, axes):
 
 def md_panel(pid, markdown):
     vis = {"title": "", "type": "markdown",
-           "params": {"markdown": markdown, "openLinksInNewTab": True, "fontSize": 14}, "aggs": []}
+           "params": {"markdown": markdown, "openLinksInNewTab": True, "fontSize": 12}, "aggs": []}
     return {"id": pid, "type": "visualization", "attributes": {
         "title": "", "visState": json.dumps(vis), "uiStateJSON": "{}", "description": "", "version": 1,
         "kibanaSavedObjectMeta": {"searchSourceJSON": json.dumps({"query": {"query": "", "language": "kuery"}, "filter": []})}},
@@ -182,9 +186,16 @@ def state_timeline_params(mappings):
 
 
 def table_links(ws, span_id):
-    url = (f"{PUBLIC}/w/{ws}/app/explore/traces/traceDetails#/?_a=(dataset:(id:'{span_id}',"
-           f"title:'otel-v1-apm-span*',type:'INDEX_PATTERN',timeFieldName:'endTime'),"
-           f"traceId:'${{__value.text}}')")
+    # Deep-link a trace-id cell into the **Agent Traces** app (not the APM explore
+    # app), pre-filtered to that one trace via the _q PPL query, so the list shows
+    # exactly the failing run — one click opens its span waterfall. (The trace-detail
+    # flyout is app-internal state with no cold-loadable URL, so we land on the
+    # filtered list rather than the flyout itself.) The PPL query is URL-encoded:
+    # `| where traceId = "<id>"`.
+    ppl = "%7C%20where%20traceId%20%3D%20%22${__value.text}%22"
+    url = (f"{PUBLIC}/w/{ws}/app/agentTraces/traces/#/?{GTIME}"
+           f"&_q=(dataset:(id:'{span_id}',signalType:traces,timeFieldName:endTime,"
+           f"title:'{SPAN_PATTERN}',type:INDEX_PATTERN),language:PPL,query:'{ppl}')")
     p = dict(P_TABLE)
     p["dataLinks"] = [{"id": "trace-link", "title": "Open trace", "url": url, "openInNewTab": True, "fields": ["traceId"]}]
     return p
@@ -212,7 +223,11 @@ def distinct_values(field):
 
 
 def query_var(name, label, field, span_id):
-    v = {"name": name, "label": label, "type": "query", "language": "PPL",
+    # A unique, stable `id` per variable is REQUIRED when a dashboard has more than
+    # one query-variable: without it OSD collides them and runs the first variable's
+    # query for all of them (every filter ends up using the first var's values).
+    v = {"id": str(uuid.uuid5(uuid.NAMESPACE_DNS, f"acme-var-{name}")),
+         "name": name, "label": label, "type": "query", "language": "PPL",
          "query": f"| where {field}!='' | stats count() by {field} | fields {field}",
          "dataset": _ppl_dataset(span_id), "multi": True, "includeAll": True,
          "sort": "alphabetical-asc", "useTimeFilter": True}
@@ -263,10 +278,13 @@ OP = "`attributes.gen_ai.operation.name`"
 MODEL = "`attributes.gen_ai.request.model`"
 EVN = "`attributes.gen_ai.evaluation.name`"
 EVV = "`attributes.gen_ai.evaluation.score.value`"
-# case-level fields rolled onto the eval_case invoke_agent span (see evals/run_evals.py)
-EQ = "`attributes.eval_question`"       # readable case label
-CSCORE = "`attributes.eval_case_score`"  # per-case mean score (0-1)
-EPASS = "`attributes.eval_passed`"       # 1 pass / 0 fail
+# Attributes attached to every `evaluation` span by evals/run_evals.py + evals/online.py,
+# so the whole Evals dashboard reads one source and filters by check / experiment / mode.
+# A case-run == one trace, so traceId is the per-case-run identity for pass/fail rollups.
+EQ = "`attributes.eval_question`"        # readable case label
+EXP = "`attributes.test.suite.name`"     # experiment (groups comparable runs)
+RUNID = "`attributes.test.suite.run.id`" # one eval run
+EVMODE = "`attributes.eval_mode`"        # offline (suite) | online (live sample)
 SPAN10 = "span(endTime,10m)"
 NAV_H = 10  # nav/overview panel height; content below is authored against y>=8 and shifted
 
@@ -284,21 +302,26 @@ def _shift(layout):
 def build(ws, span_id):
     R = "acme-run"; E = "acme-eval"
     P = lambda *a, **k: ppl_panel(*a, span_id=span_id, **k)
-    MF = f"and {MODEL} IN $model"   # model filter (model-bearing panels only)
-    CF = f"and {EVN} IN $check"     # eval-check filter
+    MF = f"and {MODEL} IN $model"   # model filter (Run Details, model-bearing panels only)
+    # Evals filters — every eval panel applies all three so the variables govern the whole dashboard.
+    CF = f"and {EVN} IN $check"       # eval-check filter
+    XF = f"and {EXP} IN $experiment"  # experiment filter
+    DF = f"and {EVMODE} IN $mode"     # online/offline filter
+    EF = f"{CF} {XF} {DF}"            # combined eval filter
 
-    nav_run = ("### Acme Agent — Run Details\n"
+    nav_run = ("#### Acme Agent — Run Details\n"
                "Live health, latency, cost and error triage for the Acme Support Agent, from its OpenTelemetry traces.\n\n"
                "**How to use:** filter cost/token panels by **Model** (top-left) · click a **trace ID** in *Recent error traces* "
                "to open the span waterfall · set the window with the time picker (top-right).\n\n"
                f"**Go to:** [Evals dashboard →]({PUBLIC}/w/{ws}/app/dashboards#/view/acme-agent-evals?{GTIME})"
                f" &nbsp;·&nbsp; [Trace explorer →]({PUBLIC}/w/{ws}/app/agentTraces/traces/#?{GTIME})"
                f" &nbsp;·&nbsp; [Spans →]({PUBLIC}/w/{ws}/app/agentTraces/spans/#?{GTIME})")
-    nav_eval = ("### Acme Agent — Evals\n"
-                "Automated eval quality for the Acme Support Agent: pass rate, per-check scores and regression trends "
-                "from `evaluation` spans (correctness, right tool, cost, latency, loops, trajectory).\n\n"
-                "**How to use:** filter by **Check** (top-left) to focus one metric · watch the trend charts for regressions · "
-                "adjust the time window (top-right).\n\n"
+    nav_eval = ("#### Acme Agent — Evals\n"
+                "Eval quality for the Acme Support Agent from `evaluation` spans — pass rate, per-check scores, "
+                "per-case outcomes, regression trends and experiment (run-vs-run) comparison.\n\n"
+                "**How to use:** filter by **Check**, **Experiment** (a run of the suite) and **Mode** (offline suite vs "
+                "online sampled traffic) — all panels obey them; picking one **Check** recomputes the case scores over "
+                "just that check · click a **trace ID** in *Recent failing evals* to open the failing run's waterfall.\n\n"
                 f"**Go to:** [Run Details →]({PUBLIC}/w/{ws}/app/dashboards#/view/acme-agent-run-details?{GTIME})"
                 f" &nbsp;·&nbsp; [Trace explorer →]({PUBLIC}/w/{ws}/app/agentTraces/traces/#?{GTIME})")
 
@@ -318,69 +341,80 @@ def build(ws, span_id):
         (P(f"{R}-p95kpi", "P95 latency", f"| where {OP}='invoke_agent' | stats percentile(durationInNanos,95) as p by {SPAN10} | eval `p95 s`=round(p / 1000000000.0, 2)", "metric", metric_params(GREEN, thresholds=lat_bands, calc="mean", unit="seconds"), {"value": ["p95 s"], "time": [SPAN10]}), 30, 16, 9, 8),
         (P(f"{R}-cost", "Est. cost $", f"| where {MODEL}!='' {MF} | stats sum({IN}) as ti, sum({OUT}) as to by {SPAN10} | eval `est $`=round(ti / 1000000.0 * 3 + to / 1000000.0 * 15, 3)", "metric", metric_params(SLATE, calc="total"), {"value": ["est $"], "time": [SPAN10]}), 39, 16, 9, 8),
         # latency
-        (md_panel(f"{R}-h-lat", "### Latency"), 0, 24, 48, 3),
+        (md_panel(f"{R}-h-lat", "##### Latency"), 0, 24, 48, 3),
         (P(f"{R}-p50", "P50 (s)", f"| where {OP}='invoke_agent' | stats percentile(durationInNanos,50) as p by {SPAN10} | eval s=round(p / 1000000000.0,2)", "metric", metric_params(BLUE, calc="mean", unit="seconds"), {"value": ["s"], "time": [SPAN10]}), 0, 27, 8, 7),
         (P(f"{R}-p95", "P95 (s)", f"| where {OP}='invoke_agent' | stats percentile(durationInNanos,95) as p by {SPAN10} | eval s=round(p / 1000000000.0,2)", "metric", metric_params(BLUE, calc="mean", unit="seconds"), {"value": ["s"], "time": [SPAN10]}), 8, 27, 8, 7),
         (P(f"{R}-p99", "P99 (s)", f"| where {OP}='invoke_agent' | stats percentile(durationInNanos,99) as p by {SPAN10} | eval s=round(p / 1000000000.0,2)", "metric", metric_params(BLUE, calc="mean", unit="seconds"), {"value": ["s"], "time": [SPAN10]}), 16, 27, 8, 7),
         (P(f"{R}-latdist", "Latency distribution (s)", f"| where {OP}='invoke_agent' | eval s=round(durationInNanos / 1000000000.0,1) | fields s", "histogram", histogram_params(BLUE), {"x": ["s"]}), 24, 27, 24, 15),
         # cost & tokens
-        (md_panel(f"{R}-h-cost", "### Cost & tokens"), 0, 34, 24, 3),
+        (md_panel(f"{R}-h-cost", "##### Cost & tokens"), 0, 34, 24, 3),
         (P(f"{R}-tok-model", "Tokens by model", f"| where {MODEL}!='' {MF} | stats sum({TOT}) as tokens by {MODEL} | sort - tokens", "bar", P_BARH, {"x": [MODEL.strip('`')], "y": ["tokens"]}), 0, 37, 24, 15),
         (P(f"{R}-tok-time", "Tokens in vs out over time", f"| where {TOT} > 0 {MF} | stats sum({IN}) as `in`, sum({OUT}) as `out` by {SPAN10}", "area", P_AREA, {"x": [SPAN10], "y": ["in", "out"]}), 24, 42, 24, 15),
         # tools & throughput
-        (md_panel(f"{R}-h-tools", "### Tools & throughput"), 24, 34, 24, 3),
+        (md_panel(f"{R}-h-tools", "##### Tools & throughput"), 24, 34, 24, 3),
         (P(f"{R}-tools", "Tool analytics", f"| where {OP}='execute_tool' and isnotnull(`attributes.gen_ai.tool.name`) and `attributes.gen_ai.tool.name`!='' | stats count() as calls, avg(durationInNanos) as d by `attributes.gen_ai.tool.name` | eval `avg ms`=round(d / 1000000.0,2) | fields `attributes.gen_ai.tool.name`, calls, `avg ms` | sort - calls", "table", P_TABLE, {}), 24, 37, 24, 8),
         (P(f"{R}-throughput", "Throughput (runs / 10m)", f"| where {OP}='invoke_agent' | stats count() as runs by {SPAN10}", "line", P_LINE, {"x": [SPAN10], "y": ["runs"]}), 0, 52, 24, 15),
         # errors (drill-down)
-        (md_panel(f"{R}-h-err", "### Errors  ·  click a row's trace ID to open the trace"), 0, 67, 48, 3),
+        (md_panel(f"{R}-h-err", "##### Errors  ·  click a row's trace ID to open the trace"), 0, 67, 48, 3),
         (P(f"{R}-errtbl", "Recent error traces", f"| where `status.code`=2 | fields traceId, endTime, name, `events.attributes.exception.message` | sort - endTime | head 20", "table", table_links(ws, span_id), {}), 0, 70, 48, 15),
         # pipeline (PromQL)
-        (md_panel(f"{R}-h-pipe", "### Telemetry pipeline (PromQL / Prometheus)"), 0, 85, 48, 3),
+        (md_panel(f"{R}-h-pipe", "##### Telemetry pipeline (PromQL / Prometheus)"), 0, 85, 48, 3),
         (promql_panel(f"{R}-ingest", "Span ingest vs export rate", "sum(rate(otelcol_receiver_accepted_spans_total[5m])) or sum(rate(otelcol_exporter_sent_spans_total[5m]))", "line", P_LINE, {"x": ["Time"], "y": ["Value"], "color": ["Series"]}), 0, 88, 36, 12),
         (promql_panel(f"{R}-exfail", "Span export failures", "sum(otelcol_exporter_send_failed_spans_total) or on() vector(0)", "metric", metric_params(RED, calc="last"), {"value": ["Value"], "time": ["Time"]}), 36, 88, 12, 12),
     ]
 
+    # Every eval panel reads `evaluation` spans and applies the combined filter EF
+    # ($check + $experiment + $mode). A case-run == one trace, so `traceId` is the
+    # per-case-run key for pass/fail rollups; `eval_question` is the readable label.
     EV = f"| where {OP}='evaluation'"
-    EC = f"| where {OP}='invoke_agent' and `attributes.gen_ai.agent.name`='eval_case'"  # one row per eval case
     score_bands = [{"value": 0, "color": RED}, {"value": 0.9, "color": AMBER}, {"value": 1, "color": GREEN}]
     ev = [
         (md_panel(f"{E}-nav", nav_eval), 0, 0, 48, NAV_H),
-        # KPI row — case-level headline numbers (+ check-level pass-rate dial)
-        (P(f"{E}-total", "Total cases", f"{EC} | stats count() as cases by {SPAN10}", "metric", metric_params(BLUE, calc="total"), {"value": ["cases"], "time": [SPAN10]}), 0, 8, 10, 8),
-        (P(f"{E}-passed", "Cases passed", f"{EC} and {EPASS}=1 | stats count() as passed by {SPAN10}", "metric", metric_params(GREEN, calc="total"), {"value": ["passed"], "time": [SPAN10]}), 10, 8, 10, 8),
-        (P(f"{E}-mean", "Mean judge score", f"{EC} | stats avg({CSCORE}) as score by {SPAN10}", "metric", metric_params(SLATE, thresholds=score_bands, calc="mean"), {"value": ["score"], "time": [SPAN10]}), 20, 8, 9, 8),
-        (P(f"{E}-min", "Min judge score", f"{EC} | stats min({CSCORE}) as score", "metric", metric_params(RED, thresholds=score_bands, calc="last"), {"value": ["score"]}), 29, 8, 9, 8),
-        (P(f"{E}-pass", "Overall pass rate", f"{EV} {CF} | stats avg({EVV}) as a | eval `pass %`=round(a * 100, 1) | fields `pass %`", "gauge",
+        # KPI row — headline numbers (all obey the filters)
+        (P(f"{E}-total", "Total cases", f"{EV} {EF} | stats distinct_count(traceId) as cases by {SPAN10}", "metric", metric_params(BLUE, calc="total"), {"value": ["cases"], "time": [SPAN10]}), 0, 8, 10, 8),
+        (P(f"{E}-passed", "Cases passed", f"{EV} {EF} | stats min({EVV}) as m by traceId, {SPAN10} as t | where m >= 1 | stats count() as passed by t", "metric", metric_params(GREEN, calc="total"), {"value": ["passed"], "time": ["t"]}), 10, 8, 10, 8),
+        (P(f"{E}-mean", "Mean judge score", f"{EV} {EF} | stats avg({EVV}) as score by {SPAN10}", "metric", metric_params(SLATE, thresholds=score_bands, calc="mean"), {"value": ["score"], "time": [SPAN10]}), 20, 8, 9, 8),
+        (P(f"{E}-min", "Min judge score", f"{EV} {EF} | stats min({EVV}) as score", "metric", metric_params(RED, thresholds=score_bands, calc="last"), {"value": ["score"]}), 29, 8, 9, 8),
+        (P(f"{E}-pass", "Overall pass rate", f"{EV} {EF} | stats avg({EVV}) as a | eval `pass %`=round(a * 100, 1) | fields `pass %`", "gauge",
            gauge_params([{"value": 0, "color": RED}, {"value": 90, "color": AMBER}, {"value": 99, "color": GREEN}]), {"value": ["pass %"]}), 38, 8, 10, 8),
         # outcome mix + per-case scores
-        (md_panel(f"{E}-h-out", "### Outcomes  ·  by eval case"), 0, 16, 48, 3),
-        (P(f"{E}-donut", "Outcome breakdown", f"{EC} | eval outcome=if({EPASS}=1,'passed','failed') | stats count() as cases by outcome", "pie", P_PIE, {"size": ["cases"], "color": ["outcome"]}), 0, 19, 24, 15),
-        (P(f"{E}-bycase", "Judge score by case", f"{EC} | stats avg({CSCORE}) as score by {EQ} | sort - score", "bar", P_BARH, {"x": [EQ.strip('`')], "y": ["score"]}), 24, 19, 24, 15),
-        # per-criterion quality (check-level, $check-filtered)
-        (md_panel(f"{E}-h-quality", "### Quality by check"), 0, 34, 48, 3),
-        (P(f"{E}-bargauge", "Pass rate by check", f"{EV} {CF} | stats avg({EVV}) as score by {EVN} | sort - score", "bar_gauge",
+        (md_panel(f"{E}-h-out", "##### Outcomes  ·  by eval case"), 0, 16, 48, 3),
+        (P(f"{E}-donut", "Outcome breakdown", f"{EV} {EF} | stats min({EVV}) as m by traceId | eval outcome=if(m >= 1,'passed','failed') | stats count() as cases by outcome", "pie", P_PIE, {"size": ["cases"], "color": ["outcome"]}), 0, 19, 24, 15),
+        (P(f"{E}-bycase", "Judge score by case", f"{EV} {EF} | stats avg({EVV}) as score by {EQ} | sort - score", "bar", P_BARH, {"x": [EQ.strip('`')], "y": ["score"]}), 24, 19, 24, 15),
+        # per-criterion quality
+        (md_panel(f"{E}-h-quality", "##### Quality by check"), 0, 34, 48, 3),
+        (P(f"{E}-bargauge", "Pass rate by check", f"{EV} {EF} | stats avg({EVV}) as score by {EVN} | sort - score", "bar_gauge",
            bargauge_params(score_bands), {"x": [EVN.strip('`')], "y": ["score"]}), 0, 37, 24, 15),
-        (P(f"{E}-failbymetric", "Failing checks by metric", f"{EV} {CF} and {EVV} < 1 | stats count() as fails by {EVN} | sort - fails", "bar", P_BARH, {"x": [EVN.strip('`')], "y": ["fails"]}), 24, 37, 24, 15),
+        (P(f"{E}-failbymetric", "Failing checks by metric", f"{EV} {EF} and {EVV} < 1 | stats count() as fails by {EVN} | sort - fails", "bar", P_BARH, {"x": [EVN.strip('`')], "y": ["fails"]}), 24, 37, 24, 15),
         # trends
-        (md_panel(f"{E}-h-trend", "### Trends"), 0, 52, 48, 3),
-        (P(f"{E}-scoretrend", "Mean judge score trend", f"{EC} | stats avg({CSCORE}) as score by {SPAN10}", "line", P_LINE, {"x": [SPAN10], "y": ["score"]}), 0, 55, 24, 15),
-        (P(f"{E}-passph", "Cases passed / 10m", f"{EC} and {EPASS}=1 | stats count() as passed by {SPAN10}", "line", P_LINE, {"x": [SPAN10], "y": ["passed"]}), 24, 55, 24, 15),
-        (P(f"{E}-caseruns", "Per-case score over runs", f"{EC} | stats avg({CSCORE}) as score by {SPAN10}, {EQ}", "line", P_LINE, {"x": [SPAN10], "y": ["score"], "color": [EQ.strip('`')]}), 0, 70, 24, 15),
-        (P(f"{E}-failtime", "Failing checks over time", f"{EV} {CF} and {EVV} < 1 | stats count() as fails by {SPAN10}, {EVN}", "area", P_AREA, {"x": [SPAN10], "y": ["fails"], "color": [EVN.strip('`')]}), 24, 70, 24, 15),
+        (md_panel(f"{E}-h-trend", "##### Trends"), 0, 52, 48, 3),
+        (P(f"{E}-scoretrend", "Mean judge score trend", f"{EV} {EF} | stats avg({EVV}) as score by {SPAN10}", "line", P_LINE, {"x": [SPAN10], "y": ["score"]}), 0, 55, 24, 15),
+        (P(f"{E}-passph", "Cases passed / 10m", f"{EV} {EF} | stats min({EVV}) as m by traceId, {SPAN10} as t | where m >= 1 | stats count() as passed by t", "line", P_LINE, {"x": ["t"], "y": ["passed"]}), 24, 55, 24, 15),
+        (P(f"{E}-caseruns", "Per-case score over runs", f"{EV} {EF} | stats avg({EVV}) as score by {SPAN10}, {EQ}", "line", P_LINE, {"x": [SPAN10], "y": ["score"], "color": [EQ.strip('`')]}), 0, 70, 24, 15),
+        (P(f"{E}-failtime", "Failing checks over time", f"{EV} {EF} and {EVV} < 1 | stats count() as fails by {SPAN10}, {EVN}", "area", P_AREA, {"x": [SPAN10], "y": ["fails"], "color": [EVN.strip('`')]}), 24, 70, 24, 15),
+        # experiments (run-vs-run) + online/offline
+        (md_panel(f"{E}-h-exp", "##### Experiments  ·  runs & mode"), 0, 85, 48, 3),
+        (P(f"{E}-byrun", "Mean score by run", f"{EV} {EF} | stats avg({EVV}) as score by {RUNID} | sort - score", "bar", P_BARH, {"x": [RUNID.strip('`')], "y": ["score"]}), 0, 88, 24, 15),
+        (P(f"{E}-bymode", "Eval volume by mode", f"{EV} {EF} | stats count() as scores by {SPAN10}, {EVMODE}", "area", P_AREA, {"x": [SPAN10], "y": ["scores"], "color": [EVMODE.strip('`')]}), 24, 88, 24, 15),
         # detail tables
-        (md_panel(f"{E}-h-tbl", "### Detail"), 0, 85, 48, 3),
-        (P(f"{E}-casetbl", "Per-case detail", f"{EC} | eval case={EQ}, score={CSCORE}, `latency s`=round(durationInNanos / 1000000000.0,2), model={MODEL}, tool=`attributes.expected_tool` | fields case, score, `latency s`, model, tool | sort score", "table", P_TABLE, {}), 0, 88, 24, 12),
-        (P(f"{E}-failtbl", "Failing checks", f"{EV} {CF} and {EVV} < 1 | stats count() as fails by {EVN} | eval check={EVN} | fields check, fails | sort - fails", "table", P_TABLE, {}), 24, 88, 24, 12),
+        (md_panel(f"{E}-h-tbl", "##### Detail"), 0, 103, 48, 3),
+        (P(f"{E}-casetbl", "Per-case detail", f"{EV} {EF} | eval case={EQ}, fail=if({EVV} < 1,1,0) | stats avg({EVV}) as score, sum(fail) as `failing checks`, count() as checks by case | sort score", "table", P_TABLE, {}), 0, 106, 24, 12),
+        (P(f"{E}-failtbl", "Failing checks", f"{EV} {EF} and {EVV} < 1 | stats count() as fails by {EVN} | eval check={EVN} | fields check, fails | sort - fails", "table", P_TABLE, {}), 24, 106, 24, 12),
+        # drill-down: recent failing evals -> Agent Traces waterfall
+        (md_panel(f"{E}-h-fail", "##### Recent failing evals  ·  click a trace ID to open the run"), 0, 118, 48, 3),
+        (P(f"{E}-failevals", "Recent failing evals", f"{EV} {EF} and {EVV} < 1 | eval case={EQ}, check={EVN}, score={EVV} | fields case, check, score, traceId, endTime | sort - endTime | head 20", "table", table_links(ws, span_id), {}), 0, 121, 48, 12),
     ]
 
     run = _shift(run)
     ev = _shift(ev)
     run_vars = [query_var("model", "Model", MODEL, span_id)]
-    eval_vars = [query_var("check", "Eval check", EVN, span_id)]
+    eval_vars = [query_var("check", "Eval check", EVN, span_id),
+                 query_var("experiment", "Experiment", EXP, span_id),
+                 query_var("mode", "Mode", EVMODE, span_id)]
     d1 = dashboard("acme-agent-run-details", "Acme Agent - Run Details", run, variables=run_vars,
                    description="Live health, latency, cost and error triage for the Acme Support Agent, from OpenTelemetry traces (otel-v1-apm-span*). Filter by model; trace IDs deep-link to the span waterfall.")
     d2 = dashboard("acme-agent-evals", "Acme Agent - Evals", ev, variables=eval_vars,
-                   description="Automated eval quality for the Acme Support Agent: pass rate, per-check scores and regression trends from evaluation spans. Filter by check.")
+                   description="Eval quality for the Acme Support Agent from evaluation spans: pass rate, per-check + per-case scores, regression trends, run-vs-run experiment comparison and online-vs-offline split. Filter by check, experiment and mode; trace IDs deep-link to the Agent Traces waterfall.")
     objs = [o for (o, *_g) in run] + [o for (o, *_g) in ev]
     return objs, [d1, d2]
 
