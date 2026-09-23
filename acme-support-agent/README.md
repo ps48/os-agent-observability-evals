@@ -38,24 +38,32 @@ layer changes per framework, and the SDK instruments all of them identically.
 
 ## Quick start
 
-```bash
-# 1. bring up the stack (OpenSearch, OTel Collector, Data Prepper, Prometheus, Dashboards)
-docker compose up -d
+The stack is the official [observability-stack](https://github.com/opensearch-project/observability-stack),
+included in this repo as a pinned git submodule at `observability-stack/` (repo root).
 
-# 2. wait for green, then run the verify script
+```bash
+# 1. clone with the observability-stack submodule
+git clone --recurse-submodules https://github.com/anirudha/os-agent-observability-evals.git
+cd os-agent-observability-evals
+
+# 2. bring up the stack (OpenSearch, OTel Collector, Data Prepper, Prometheus, Dashboards)
+cd observability-stack && docker compose up -d
+cd ../acme-support-agent
+
+# 3. wait for green, then run the verify script
 ./verify/check-stack.sh
 
-# 3. run the agent (Python example)
+# 4. run the agent (Python example)
 cd python
 pip install -e ".[openai]"          # or [anthropic], [bedrock], [langchain], [llamaindex], [all]
 export OPENAI_API_KEY=sk-...
 python -m acme.run "where is my order #1007?"
 
-# 4. confirm telemetry landed
+# 5. confirm telemetry landed
 cd ..
 ./verify/check-instrumentation.sh
 
-# 5. run the eval suite
+# 6. run the eval suite
 cd python
 python -m evals.run_evals
 ```
@@ -63,18 +71,25 @@ python -m evals.run_evals
 Then open OpenSearch Dashboards at http://localhost:5601 (admin / `My_password_123!@#`)
 to explore the traces.
 
+No provider account? Set `ACME_MOCK=1` (step 4) to run the whole tutorial fully
+offline with deterministic canned responses — only the local observability
+stack is needed, no AWS/OpenAI/Anthropic creds. Unset it (or `ACME_MOCK=0`) to
+use the real provider again.
+
 ## Repo layout
 
 ```
 acme-support-agent/
-├── docker-compose.yml          # the full local stack
-├── infra/                      # collector, data-prepper, prometheus config
 ├── python/                     # native SDK agent (all frameworks)
 │   ├── acme/                   # agent + tools + framework adapters
 │   └── evals/                  # dataset + golden paths + eval runner
 ├── typescript/                 # raw-OTel agent (interim path)
 └── verify/                     # stack + instrumentation health checks
 ```
+
+The local stack (`docker-compose.yml`, collector/data-prepper/prometheus config) now
+lives in the `observability-stack/` git submodule at the repo root, not under
+`acme-support-agent/`.
 
 ## The journey, mapped to this repo
 
@@ -83,12 +98,12 @@ Full index with read / code / run links for every part: [`docs/README.md`](docs/
 | Blog part | Where in the repo |
 |---|---|
 | 1 — Define goals | [`python/evals/criteria.py`](python/evals/criteria.py) |
-| 2 — Stand up the stack | [`docker-compose.yml`](docker-compose.yml) |
+| 2 — Stand up the stack | [`observability-stack/docker-compose.yml`](../observability-stack/docker-compose.yml) (pinned submodule) |
 | 3 — Instrument | [`python/acme/observability.py`](python/acme/observability.py), [`typescript/src/observability.ts`](typescript/src/observability.ts) |
 | 4 — Verify | [`verify/`](verify/) |
 | 5 — Observe | [`verify/queries.md`](verify/queries.md) |
 | 6 — Evaluate | [`python/evals/`](python/evals/) |
-| 7 — Monitor production | [`infra/prometheus/`](infra/prometheus/), [`docs/production.md`](docs/production.md) |
+| 7 — Monitor production | [`docs/production.md`](docs/production.md) (Prometheus config now lives in the `observability-stack` submodule) |
 | 8 — Close the loop | [`python/evals/dataset.py`](python/evals/dataset.py) |
 
 ## Credentials

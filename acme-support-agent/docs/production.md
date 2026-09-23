@@ -43,8 +43,14 @@ The PPL and PromQL syntax are unchanged from local.
 
 ## 3. RED metrics, SLOs, and alerts
 
-The recording rules and burn-rate alerts in
-[`../infra/prometheus/rules.yml`](../infra/prometheus/rules.yml) define:
+The local `infra/` directory (and its `prometheus/rules.yml`) has been
+removed; Prometheus configuration for the stack itself now lives in the
+`observability-stack` submodule (see
+[`observability-stack/docker-compose/prometheus/`](../../observability-stack/docker-compose/prometheus/),
+including the health-alerting rule group in
+[`rules-stack/stack-alerts.yml`](../../observability-stack/docker-compose/prometheus/rules-stack/stack-alerts.yml)
+as a format example). Write your own recording rules and burn-rate alerts on top of
+the `gen_ai.*`-derived metrics for:
 
 - **Rate** — agent invocations/sec per agent
 - **Errors** — error ratio per agent

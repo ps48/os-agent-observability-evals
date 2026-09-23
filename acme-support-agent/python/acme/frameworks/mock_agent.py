@@ -1,0 +1,72 @@
+"""Offline mock adapter — no AWS/OpenAI/Anthropic calls.
+
+Selected automatically when ACME_MOCK is set (see acme/mock.py). Routes the
+question to the same deterministic tools every other adapter uses
+(acme/tools.py), via the TOOL_FUNCTIONS registry so run_evals' tool-tracking
+monkeypatch still works, and builds the answer straight from the tool's
+deterministic result. The chat span is still emitted (op=Op.CHAT) so the same
+telemetry shape (invoke_agent -> chat -> execute_tool -> retrieval/embeddings)
+comes out of the trace, just without any real model or embedding call.
+"""
+
+from __future__ import annotations
+
+import re
+
+from ..observability import observe, enrich, Op
+from ..tools import TOOL_FUNCTIONS
+
+_ORDER_HINT_RE = re.compile(r"order")
+_NUMBER_RE = re.compile(r"\d{3,}")
+_SKU_RE = re.compile(r"[A-Z]{2,}-[A-Z0-9]+")
+
+
+def _route_and_call(question: str) -> tuple[str, dict]:
+    """Pick a tool for the question and call it via TOOL_FUNCTIONS[name]."""
+    q_lower = question.lower()
+    number_match = _NUMBER_RE.search(question)
+
+    if _ORDER_HINT_RE.search(q_lower) or number_match:
+        order_id = number_match.group(0) if number_match else ""
+        return "lookup_order", TOOL_FUNCTIONS["lookup_order"](order_id)
+
+    sku_match = _SKU_RE.search(question)
+    if sku_match or "stock" in q_lower or "inventory" in q_lower:
+        sku = sku_match.group(0) if sku_match else ""
+        return "check_inventory", TOOL_FUNCTIONS["check_inventory"](sku)
+
+    return "search_policy", TOOL_FUNCTIONS["search_policy"](question)
+
+
+@observe(op=Op.CHAT, name="mock-chat")
+def _mock_chat(question: str) -> str:
+    """The mock "model turn" — deterministic routing + answer synthesis."""
+    tool_name, result = _route_and_call(question)
+
+    if isinstance(result, dict) and result.get("error"):
+        if tool_name == "lookup_order":
+            return f"Sorry, I couldn't find an order matching {question!r}."
+        if tool_name == "check_inventory":
+            return f"Sorry, I couldn't find that SKU."
+        return "Sorry, I couldn't find an answer to that in our policy docs."
+
+    if tool_name == "lookup_order":
+        answer = f"Your order is {result['status']}."
+        items = result.get("items")
+        if items:
+            answer += f" Items: {', '.join(items)}."
+        ship_date = result.get("ship_date")
+        if ship_date:
+            answer += f" Ship date: {ship_date}."
+        return answer
+
+    if tool_name == "check_inventory":
+        return f"In stock: {result['in_stock']} units."
+
+    return result["answer"]
+
+
+def run_turn(question: str, history: list[dict]) -> str:
+    """Offline drop-in for the real framework adapters' run_turn."""
+    enrich(model="mock", provider="mock")
+    return _mock_chat(question)

@@ -16,6 +16,11 @@ import os
 
 def get_adapter(name: str | None = None):
     """Return the run_turn callable for the requested framework."""
+    from ..mock import mock_enabled
+    if mock_enabled():
+        from .mock_agent import run_turn
+        return run_turn
+
     name = (name or os.environ.get("ACME_FRAMEWORK", "openai")).lower()
 
     if name == "openai":
@@ -28,9 +33,11 @@ def get_adapter(name: str | None = None):
         from .langchain_agent import run_turn
     elif name == "llamaindex":
         from .llamaindex_agent import run_turn
+    elif name == "mock":
+        from .mock_agent import run_turn
     else:
         raise ValueError(
             f"Unknown framework '{name}'. "
-            "Choose: openai | anthropic | bedrock | langchain | llamaindex"
+            "Choose: openai | anthropic | bedrock | langchain | llamaindex | mock"
         )
     return run_turn

@@ -11,8 +11,10 @@ external eval library while reusing the same agent, dataset, and golden paths:
 
 ## Setup
 
-Bring up the stack from the original tutorial folder
-([`../acme-support-agent`](../acme-support-agent)) — `docker compose up -d` — then:
+**Stack:** use the pinned `observability-stack` submodule at the repo root —
+`cd observability-stack && docker compose up -d`.
+
+Then:
 
 ```bash
 # The GenAI SDK isn't on PyPI yet — install it from source first:

@@ -66,13 +66,18 @@ README with setup and run steps.
 
 ## Quick start
 
+The observability backend is the official
+[observability-stack](https://github.com/opensearch-project/observability-stack),
+included here as a pinned git submodule at `observability-stack/`.
+
 ```bash
-# 1. clone
-git clone https://github.com/anirudha/os-agent-observability-evals.git
-cd os-agent-observability-evals/acme-support-agent
+# 1. clone with the observability-stack submodule
+git clone --recurse-submodules https://github.com/anirudha/os-agent-observability-evals.git
+cd os-agent-observability-evals
 
 # 2. bring up the stack (OpenSearch, OTel Collector, Data Prepper, Prometheus, Dashboards)
-docker compose up -d
+cd observability-stack && docker compose up -d
+cd ../acme-support-agent
 ./verify/check-stack.sh
 
 # 3. install the SDK from source (it isn't on PyPI yet), then the agent
@@ -103,12 +108,12 @@ Full index with read / code / run links for every part:
 | Part | Step | In the repo |
 |---|---|---|
 | 1 | Define goals → eval criteria | [`python/evals/criteria.py`](acme-support-agent/python/evals/criteria.py) |
-| 2 | Stand up the stack | [`docker-compose.yml`](acme-support-agent/docker-compose.yml) |
+| 2 | Stand up the stack | [`observability-stack/docker-compose.yml`](observability-stack/docker-compose.yml) (pinned submodule) |
 | 3 | Instrument your framework | [`python/acme/observability.py`](acme-support-agent/python/acme/observability.py), [`typescript/src/observability.ts`](acme-support-agent/typescript/src/observability.ts) |
 | 4 | Verify telemetry lands | [`verify/`](acme-support-agent/verify/) |
 | 5 | Observe & debug | [`verify/queries.md`](acme-support-agent/verify/queries.md) |
 | 6 | Evaluate against a dataset | [`python/evals/`](acme-support-agent/python/evals/) |
-| 7 | Monitor production | [`infra/prometheus/`](acme-support-agent/infra/prometheus/), [`docs/production.md`](acme-support-agent/docs/production.md) |
+| 7 | Monitor production | [`docs/production.md`](acme-support-agent/docs/production.md) (Prometheus config now lives in the `observability-stack` submodule) |
 | 8 | Close the loop | [`python/evals/dataset.py`](acme-support-agent/python/evals/dataset.py) |
 
 ## What's tested
