@@ -4,15 +4,25 @@ Two custom OpenSearch Dashboards for the Acme Support Agent, built entirely from
 **PPL** and **PromQL** `explore` panels (the same saved-object type the stack's own
 samples use):
 
-- **Acme Agent — Run Details** — traffic & reliability (agent runs, LLM calls,
-  success rate %, error rate %, sessions, success/failure, a recent **error-traces**
-  table), latency & cost (P50/P95 latency, est. cost $, tokens in/out), throughput and
-  tokens over time, models used, tool-usage breakdown — PPL over `otel-v1-apm-span*`;
-  plus span ingest/export throughput + export failures (PromQL over the collector's
-  `otelcol_*` self-metrics). KPI tiles are threshold-colored (green good, red bad).
-- **Acme Agent — Evals** — eval runs, overall pass %, failed checks, score events,
-  average score and failing checks per metric, average score over time, and a failing-
-  checks-by-metric table (PPL over the `evaluation` spans).
+Modeled on Arize/Phoenix, Braintrust, LangSmith and Langfuse eval + observability
+dashboards, within the PPL/PromQL `explore` viz framework:
+
+- **Acme Agent — Run Details** — a full-width **agent-health `state_timeline`** (OK/Error
+  per bucket), a **success-rate gauge**, error-rate/P95/cost KPIs (threshold-colored,
+  unit-formatted), **latency P50/P95/P99 + a latency `histogram`**, **tokens by model**,
+  tokens-in/out **stacked area**, throughput, **tool analytics** table, and a **recent
+  error-traces table whose trace IDs link straight to the trace waterfall** (drill-down).
+  PromQL panels cover collector span ingest/export rate + failures.
+- **Acme Agent — Evals** — eval-runs / **pass-rate gauge** / failed-checks / score-events
+  KPIs, a **`bar_gauge` per-check pass rate** (answer_correctness, right_tool, cost, …),
+  failing-checks bar, **score + failure trend** (line + stacked area), and a failing-
+  checks table (PPL over `evaluation` spans).
+
+Both dashboards carry a **nav header** linking to each other and to the Agent Traces
+explorer. Scoped out (not expressible in a static PPL/PromQL dashboard): run-vs-run
+experiment diffing, human-annotation queues, drift detection (needs the Anomaly
+Detection/Alerting plugins), and the span waterfall itself — which the linked **Agent
+Traces app** already provides.
 
 ![Run Details](../../images/dashboard-run-details.png)
 ![Evals](../../images/dashboard-evals.png)
