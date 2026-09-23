@@ -77,6 +77,14 @@ def run_case(case: EvalCase, framework: str | None) -> dict:
     score(name="no_loops", value=no_loops)
     score(name="cost", value=cost_ok)
 
+    # roll the per-case result onto the eval_case span so dashboards can key
+    # case-level panels (per-case score / pass rate / outcome mix) off the
+    # readable question rather than joining across spans by trace id.
+    checks = [correctness, right_tool, trajectory_match, latency_ok, no_loops, cost_ok]
+    case_passed = all(checks)
+    enrich(eval_case_score=round(sum(checks) / len(checks), 3),
+           eval_passed=1 if case_passed else 0)
+
     return {
         "question": case.question,
         "answer": answer,

@@ -71,8 +71,17 @@ def _answer_from(tool_name: str, result: dict, question: str) -> str:
 
 
 def _record_nominal(question: str, answer: str) -> None:
-    """Deterministic token accounting so cost/token panels have data offline."""
-    record_usage(len(question) * 3 + 400, len(answer) * 3 + 40)
+    """Deterministic token accounting so cost/token panels have data offline.
+
+    Feeds the in-process counter (for the eval cost check) *and* enriches the
+    active chat span with gen_ai.request.model + usage, so the Run Details
+    cost/token panels populate in mock mode (real adapters get this from the
+    provider response; the mock has to supply it explicitly).
+    """
+    inp = len(question) * 3 + 400
+    out = len(answer) * 3 + 40
+    record_usage(inp, out)
+    enrich(model="mock", input_tokens=inp, output_tokens=out)
 
 
 @observe(op=Op.CHAT, name="mock-chat")
@@ -108,5 +117,6 @@ def run_turn(question: str, history: list[dict]) -> str:
         time.sleep(9)  # breach LATENCY_BUDGET_S (8s)
     if "cost" in faults:
         record_usage(5200, 900)  # exceed TOKEN_BUDGET (4000)
+        enrich(model="mock", input_tokens=5200, output_tokens=900)  # show the blowup in token panels
 
     return _mock_chat(question, faults)

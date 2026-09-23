@@ -33,4 +33,21 @@ for f in slow loop wrong cost; do
   ACME_FAULT=$f "$PY" -m evals.run_evals >/dev/null 2>&1
 done
 
-echo "done — wait ~90s for Data Prepper ingestion, then refresh the dashboards"
+# Cosmetic demo aid: the generator emits every trace "now", which piles all points
+# into one time bucket and leaves the trend charts + KPI sparklines flat. Spread each
+# trace deterministically across the last ~6h (by a hash of its traceId, preserving
+# intra-trace timing) so the dashboards render like a continuously-running agent.
+# Waits for ingestion first. Skip the whole step with SPREAD=0.
+if [ "${SPREAD:-1}" = "1" ]; then
+  echo "== waiting ~95s for Data Prepper ingestion, then spreading traces across ~6h =="
+  sleep 95
+  OS_URL="${OPENSEARCH_URL:-https://localhost:9200}"
+  OS_AUTH="${OPENSEARCH_USER:-admin}:${OPENSEARCH_PASSWORD:-My_password_123!@#}"
+  curl -sk -u "$OS_AUTH" -X POST "$OS_URL/otel-v1-apm-span*/_update_by_query?refresh=true&conflicts=proceed&wait_for_completion=true" \
+    -H 'Content-Type: application/json' \
+    -d '{"script":{"lang":"painless","source":"int h = ctx._source.traceId.hashCode(); if (h < 0) { h = -h; } long off = (long)(h % 360) * 60L; def fs = [\"startTime\",\"endTime\",\"time\"]; for (int i=0;i<fs.size();i++){ String f = fs.get(i); if (ctx._source.containsKey(f) && ctx._source[f] != null){ ctx._source[f] = Instant.parse(ctx._source[f]).minusSeconds(off).toString(); } }"}}' \
+    >/dev/null 2>&1 && echo "  spread done — refresh the dashboards" \
+    || echo "  spread skipped (OpenSearch not reachable at $OS_URL); trends fill in as the agent runs over time"
+else
+  echo "done — wait ~90s for Data Prepper ingestion, then refresh the dashboards (SPREAD=0: trends fill in over time)"
+fi

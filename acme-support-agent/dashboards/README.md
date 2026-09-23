@@ -38,17 +38,28 @@ defaults to *All*, and KPI cards that show a **trend sparkline** behind the big 
 
 ## Acme Agent — Evals
 
+Two grains of data drive this dashboard: **case-level** panels read the per-case rollup
+(`eval_case_score` / `eval_passed` / `eval_question`) on the `eval_case` `invoke_agent` span;
+**check-level** panels read the individual `evaluation` spans (`evaluation.name` / `.score.value`)
+and honor the **Check** filter.
+
 | Panel | Answers | Chart | Query source |
 |---|---|---|---|
-| Eval runs | How many eval cases ran? | metric + sparkline | `count()` of eval `invoke_agent` spans (not Check-filtered) |
-| Overall pass rate | Aggregate quality (**Check**-filtered) | gauge | `avg(evaluation.score.value)` |
-| Failed checks | How many checks scored < 1 (**Check**-filtered) | metric + sparkline | `count()` where score `< 1` by bucket |
-| Score events | Total scored checks (**Check**-filtered) | metric + sparkline | `count()` of `evaluation` spans by bucket |
+| Total cases | How many eval cases ran? | metric + sparkline | `count()` of `eval_case` spans by bucket |
+| Cases passed | How many cases passed every check? | metric + sparkline | `count()` where `eval_passed=1` by bucket |
+| Mean judge score | Average per-case score | metric + sparkline | `avg(eval_case_score)` by bucket |
+| Min judge score | Worst case in the window | metric | `min(eval_case_score)` |
+| Overall pass rate | Aggregate check quality (**Check**-filtered) | gauge | `avg(evaluation.score.value)` |
+| Outcome breakdown | Passed vs failed mix | donut (pie) | `count()` by `passed`/`failed` |
+| Judge score by case | Which question scores worst | bar | `avg(eval_case_score)` by `eval_question` |
 | Pass rate by check | Which criterion is weakest (**Check**-filtered) | `bar_gauge` | `avg(score)` by `evaluation.name`, threshold-colored |
 | Failing checks by metric | Where failures concentrate (**Check**-filtered) | bar | `count()` where score `< 1` by `evaluation.name` |
-| Avg score over time | Per-check regression trend (**Check**-filtered) | line | `avg(score)` by bucket, `evaluation.name` |
+| Mean judge score trend | Quality over time | line | `avg(eval_case_score)` by bucket |
+| Cases passed / 10m | Passing throughput | line | `count()` where `eval_passed=1` by bucket |
+| Per-case score over runs | Per-question regression trend | multi-line | `avg(eval_case_score)` by bucket, `eval_question` |
 | Failing checks over time | Failure trend (**Check**-filtered) | stacked area | `count()` where score `< 1` by bucket, `evaluation.name` |
-| Failing checks (table) | The failing criteria, ranked (**Check**-filtered) | table | `count()` where score `< 1` by `evaluation.name` |
+| Per-case detail | Score, latency, model, tool per case | table | `eval_case` spans: `eval_question`, score, duration, model, `expected_tool` |
+| Failing checks | The failing criteria, ranked (**Check**-filtered) | table | `count()` where score `< 1` by `evaluation.name` |
 
 ## How to read it
 
@@ -58,10 +69,11 @@ defaults to *All*, and KPI cards that show a **trend sparkline** behind the big 
   *current health* against thresholds; the KPI cards show a *trend* (the sparkline behind the
   number is the same metric bucketed over the window).
 - **Filter variables** — the **Model** (Run Details) and **Check** (Evals) dropdowns default to
-  *All*. Selecting one value scopes the model/cost/token panels (Model) or every eval panel
-  (Check). `Eval runs` stays unfiltered on purpose — it counts eval *cases*, which carry no
-  `evaluation.name`. Model-independent panels (health, latency, tools, pipeline) are likewise
-  left unfiltered, since those spans carry no `request.model`.
+  *All*. Selecting one value scopes the model/cost/token panels (Model) or the check-level eval
+  panels (Check). The **case-level** eval panels (Total cases, Cases passed, Mean/Min judge score,
+  outcome donut, judge-score-by-case, the case trends and per-case table) stay unfiltered on
+  purpose — those spans carry `eval_question`, not `evaluation.name`. Likewise the Run Details
+  health/latency/tool/pipeline panels are unfiltered, since those spans carry no `request.model`.
 - **Trace drill-down** — in *Recent error traces*, the `traceId` column is a data-link to the
   span waterfall in the Agent Traces app (opens in a new tab). Nav links and the drill-down
   carry the `now-24h` window across.
@@ -124,6 +136,13 @@ It drives baseline success traffic + a clean eval pass, then injects failures vi
 Wait ~90s for Data Prepper ingestion, then refresh the dashboards. Default (no
 `ACME_FAULT`) behavior is unchanged.
 
+The generator emits every trace at the current time, which piles all points into one
+bucket and leaves the trend charts / KPI sparklines flat. As a final step it therefore
+waits for ingestion and **spreads the traces across the last ~6h** (deterministically, by
+a hash of each `traceId`, preserving intra-trace timing) so the dashboards look like a
+continuously-running agent. Set `SPREAD=0` to skip that and let the trends fill in as you
+run the agent over time.
+
 ## Notes
 
 - **PromQL scope:** the Python SDK exports traces only, so no per-agent metrics reach
@@ -135,6 +154,15 @@ Wait ~90s for Data Prepper ingestion, then refresh the dashboards. Default (no
   init refreshes that list as new models / checks appear.
 - Token fields are cast (`cast(... as int)`) in PPL sums, matching `verify/queries.md`.
 - The dashboards read `endTime` as the time field for the span index pattern.
+- **Case-level eval panels** need the per-case rollup (`eval_case_score` / `eval_passed`)
+  that `evals/run_evals.py` attaches to the `eval_case` span — re-run the evals (or
+  `demo-data.sh`) after pulling this change so those fields exist.
+- **Rollover gotcha:** if Data Prepper rolls the span index over to a fresh empty
+  `otel-v1-apm-span-00000N`, its template maps `events.attributes` as a scalar while the
+  populated index has it as an object — the mismatch makes wildcard PPL fail to plan
+  (`UnsupportedOperationException` at the analyzing stage) and every panel shows an error.
+  A single demo run won't trigger a rollover; if you hit it, delete the empty index
+  (`DELETE otel-v1-apm-span-00000N`) so the `otel-v1-apm-span*` pattern resolves cleanly.
 - **Scoped out** (not expressible in a static PPL/PromQL dashboard): run-vs-run experiment
   diffing, human-annotation queues, drift detection (needs the Anomaly Detection / Alerting
   plugins), and the span waterfall itself — which the linked **Agent Traces app** provides.

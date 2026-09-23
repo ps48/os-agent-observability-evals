@@ -263,6 +263,10 @@ OP = "`attributes.gen_ai.operation.name`"
 MODEL = "`attributes.gen_ai.request.model`"
 EVN = "`attributes.gen_ai.evaluation.name`"
 EVV = "`attributes.gen_ai.evaluation.score.value`"
+# case-level fields rolled onto the eval_case invoke_agent span (see evals/run_evals.py)
+EQ = "`attributes.eval_question`"       # readable case label
+CSCORE = "`attributes.eval_case_score`"  # per-case mean score (0-1)
+EPASS = "`attributes.eval_passed`"       # 1 pass / 0 fail
 SPAN10 = "span(endTime,10m)"
 NAV_H = 10  # nav/overview panel height; content below is authored against y>=8 and shifted
 
@@ -337,22 +341,36 @@ def build(ws, span_id):
     ]
 
     EV = f"| where {OP}='evaluation'"
+    EC = f"| where {OP}='invoke_agent' and `attributes.gen_ai.agent.name`='eval_case'"  # one row per eval case
+    score_bands = [{"value": 0, "color": RED}, {"value": 0.9, "color": AMBER}, {"value": 1, "color": GREEN}]
     ev = [
         (md_panel(f"{E}-nav", nav_eval), 0, 0, 48, NAV_H),
-        (P(f"{E}-runs", "Eval runs", f"| where {OP}='invoke_agent' and `attributes.gen_ai.agent.name`='eval_case' | stats count() as runs by {SPAN10}", "metric", metric_params(BLUE, calc="total"), {"value": ["runs"], "time": [SPAN10]}), 0, 8, 12, 8),
+        # KPI row — case-level headline numbers (+ check-level pass-rate dial)
+        (P(f"{E}-total", "Total cases", f"{EC} | stats count() as cases by {SPAN10}", "metric", metric_params(BLUE, calc="total"), {"value": ["cases"], "time": [SPAN10]}), 0, 8, 10, 8),
+        (P(f"{E}-passed", "Cases passed", f"{EC} and {EPASS}=1 | stats count() as passed by {SPAN10}", "metric", metric_params(GREEN, calc="total"), {"value": ["passed"], "time": [SPAN10]}), 10, 8, 10, 8),
+        (P(f"{E}-mean", "Mean judge score", f"{EC} | stats avg({CSCORE}) as score by {SPAN10}", "metric", metric_params(SLATE, thresholds=score_bands, calc="mean"), {"value": ["score"], "time": [SPAN10]}), 20, 8, 9, 8),
+        (P(f"{E}-min", "Min judge score", f"{EC} | stats min({CSCORE}) as score", "metric", metric_params(RED, thresholds=score_bands, calc="last"), {"value": ["score"]}), 29, 8, 9, 8),
         (P(f"{E}-pass", "Overall pass rate", f"{EV} {CF} | stats avg({EVV}) as a | eval `pass %`=round(a * 100, 1) | fields `pass %`", "gauge",
-           gauge_params([{"value": 0, "color": RED}, {"value": 90, "color": AMBER}, {"value": 99, "color": GREEN}]), {"value": ["pass %"]}), 12, 8, 12, 8),
-        (P(f"{E}-fails", "Failed checks", f"{EV} {CF} and {EVV} < 1 | stats count() as fails by {SPAN10}", "metric", metric_params(RED, calc="total"), {"value": ["fails"], "time": [SPAN10]}), 24, 8, 12, 8),
-        (P(f"{E}-events", "Score events", f"{EV} {CF} | stats count() as events by {SPAN10}", "metric", metric_params(SLATE, calc="total"), {"value": ["events"], "time": [SPAN10]}), 36, 8, 12, 8),
-        (md_panel(f"{E}-h-quality", "### Quality by check"), 0, 16, 48, 3),
+           gauge_params([{"value": 0, "color": RED}, {"value": 90, "color": AMBER}, {"value": 99, "color": GREEN}]), {"value": ["pass %"]}), 38, 8, 10, 8),
+        # outcome mix + per-case scores
+        (md_panel(f"{E}-h-out", "### Outcomes  ·  by eval case"), 0, 16, 48, 3),
+        (P(f"{E}-donut", "Outcome breakdown", f"{EC} | eval outcome=if({EPASS}=1,'passed','failed') | stats count() as cases by outcome", "pie", P_PIE, {"size": ["cases"], "color": ["outcome"]}), 0, 19, 24, 15),
+        (P(f"{E}-bycase", "Judge score by case", f"{EC} | stats avg({CSCORE}) as score by {EQ} | sort - score", "bar", P_BARH, {"x": [EQ.strip('`')], "y": ["score"]}), 24, 19, 24, 15),
+        # per-criterion quality (check-level, $check-filtered)
+        (md_panel(f"{E}-h-quality", "### Quality by check"), 0, 34, 48, 3),
         (P(f"{E}-bargauge", "Pass rate by check", f"{EV} {CF} | stats avg({EVV}) as score by {EVN} | sort - score", "bar_gauge",
-           bargauge_params([{"value": 0, "color": RED}, {"value": 0.9, "color": AMBER}, {"value": 0.99, "color": GREEN}]), {"x": [EVN.strip('`')], "y": ["score"]}), 0, 19, 24, 15),
-        (P(f"{E}-failbymetric", "Failing checks by metric", f"{EV} {CF} and {EVV} < 1 | stats count() as fails by {EVN} | sort - fails", "bar", P_BARH, {"x": [EVN.strip('`')], "y": ["fails"]}), 24, 19, 24, 15),
-        (md_panel(f"{E}-h-trend", "### Score & failure trend"), 0, 34, 48, 3),
-        (P(f"{E}-time", "Avg score over time", f"{EV} {CF} | stats avg({EVV}) as score by {SPAN10}, {EVN}", "line", P_LINE, {"x": [SPAN10], "y": ["score"], "color": [EVN.strip('`')]}), 0, 37, 24, 15),
-        (P(f"{E}-failtime", "Failing checks over time", f"{EV} {CF} and {EVV} < 1 | stats count() as fails by {SPAN10}, {EVN}", "area", P_AREA, {"x": [SPAN10], "y": ["fails"], "color": [EVN.strip('`')]}), 24, 37, 24, 15),
-        (md_panel(f"{E}-h-tbl", "### Failing checks"), 0, 52, 48, 3),
-        (P(f"{E}-failtbl", "Failing checks by metric", f"{EV} {CF} and {EVV} < 1 | stats count() as fails by {EVN} | sort - fails", "table", P_TABLE, {}), 0, 55, 48, 12),
+           bargauge_params(score_bands), {"x": [EVN.strip('`')], "y": ["score"]}), 0, 37, 24, 15),
+        (P(f"{E}-failbymetric", "Failing checks by metric", f"{EV} {CF} and {EVV} < 1 | stats count() as fails by {EVN} | sort - fails", "bar", P_BARH, {"x": [EVN.strip('`')], "y": ["fails"]}), 24, 37, 24, 15),
+        # trends
+        (md_panel(f"{E}-h-trend", "### Trends"), 0, 52, 48, 3),
+        (P(f"{E}-scoretrend", "Mean judge score trend", f"{EC} | stats avg({CSCORE}) as score by {SPAN10}", "line", P_LINE, {"x": [SPAN10], "y": ["score"]}), 0, 55, 24, 15),
+        (P(f"{E}-passph", "Cases passed / 10m", f"{EC} and {EPASS}=1 | stats count() as passed by {SPAN10}", "line", P_LINE, {"x": [SPAN10], "y": ["passed"]}), 24, 55, 24, 15),
+        (P(f"{E}-caseruns", "Per-case score over runs", f"{EC} | stats avg({CSCORE}) as score by {SPAN10}, {EQ}", "line", P_LINE, {"x": [SPAN10], "y": ["score"], "color": [EQ.strip('`')]}), 0, 70, 24, 15),
+        (P(f"{E}-failtime", "Failing checks over time", f"{EV} {CF} and {EVV} < 1 | stats count() as fails by {SPAN10}, {EVN}", "area", P_AREA, {"x": [SPAN10], "y": ["fails"], "color": [EVN.strip('`')]}), 24, 70, 24, 15),
+        # detail tables
+        (md_panel(f"{E}-h-tbl", "### Detail"), 0, 85, 48, 3),
+        (P(f"{E}-casetbl", "Per-case detail", f"{EC} | eval case={EQ}, score={CSCORE}, `latency s`=round(durationInNanos / 1000000000.0,2), model={MODEL}, tool=`attributes.expected_tool` | fields case, score, `latency s`, model, tool | sort score", "table", P_TABLE, {}), 0, 88, 24, 12),
+        (P(f"{E}-failtbl", "Failing checks", f"{EV} {CF} and {EVV} < 1 | stats count() as fails by {EVN} | eval check={EVN} | fields check, fails | sort - fails", "table", P_TABLE, {}), 24, 88, 24, 12),
     ]
 
     run = _shift(run)
