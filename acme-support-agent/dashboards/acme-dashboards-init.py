@@ -2,8 +2,8 @@
 """Curated dashboard init for the Acme Support Agent.
 
 Creates two agent dashboards ("Acme Agent - Run Details" and "Acme Agent - Evals")
-from PPL + PromQL `explore` panels, and removes the stack's demo dashboards so the
-Dashboards home shows only what this tutorial needs.
+from PPL + PromQL `explore` panels (plus Markdown section headers), and removes the
+stack's demo dashboards so Dashboards shows only what this tutorial needs.
 
 Runs after the stack's own `opensearch-dashboards-init` (which creates the index
 patterns and the `ObservabilityStack_Prometheus` data connection this relies on).
@@ -30,13 +30,14 @@ PROM = "ObservabilityStack_Prometheus"
 H = {"osd-xsrf": "true", "Content-Type": "application/json"}
 S = requests.Session(); S.auth = (USER, PW); S.verify = False
 
-# Demo dashboards to remove ("keep only what we need").
 DEMO_TITLES = {"Astronomy Shop", "Astronomy shop - service telemetry"}
+
+# colors
+GREEN = "#017D73"; RED = "#BD271E"; BLUE = "#0a65c6"; AMBER = "#F5A700"; SLATE = "#343741"
 
 
 def _req(method, path, **kw):
-    r = S.request(method, f"{BASE}{path}", headers=H, timeout=30, **kw)
-    return r
+    return S.request(method, f"{BASE}{path}", headers=H, timeout=30, **kw)
 
 
 def wait_for_osd():
@@ -55,10 +56,10 @@ def find_workspace_id():
     for w in r.json().get("result", {}).get("workspaces", []):
         if w.get("name") == WORKSPACE_NAME:
             return w.get("id")
-    return None  # default workspace
+    return None
 
 
-def wp(ws):  # workspace path prefix
+def wp(ws):
     return f"/w/{ws}" if ws else ""
 
 
@@ -70,7 +71,7 @@ def find_index_pattern_id(ws, title):
     raise SystemExit(f"index-pattern {title!r} not found - is the stack init done?")
 
 
-# --- explore panel builders -------------------------------------------------
+# --- panel builders ---------------------------------------------------------
 
 def _ppl_dataset(span_id):
     return {"id": span_id, "title": SPAN_PATTERN, "type": "INDEX_PATTERN", "timeFieldName": "endTime"}
@@ -105,36 +106,49 @@ def promql_panel(pid, title, promql, chart_type, viz_params, axes):
         "references": [{"id": PROM, "name": "kibanaSavedObjectMeta.searchSourceJSON.index", "type": "index-pattern"}]}
 
 
-# reusable viz param blocks (copied from the stack's own sample panels)
-P_METRIC = {"showTitle": True, "title": "", "showPercentage": False, "valueCalculation": "total",
-            "thresholdOptions": {"baseColor": "#0a65c6", "thresholds": []}, "useThresholdColor": False,
-            "textMode": "value_and_name", "colorMode": "none"}
-P_METRIC_LAST = {**P_METRIC, "valueCalculation": "last"}
+def md_panel(pid, _title, markdown):
+    # Blank title so the panel chrome shows only the Markdown heading, not a title bar.
+    vis = {"title": "", "type": "markdown",
+           "params": {"markdown": markdown, "openLinksInNewTab": True, "fontSize": 14},
+           "aggs": []}
+    return {"id": pid, "type": "visualization", "attributes": {
+        "title": "", "visState": json.dumps(vis), "uiStateJSON": "{}", "description": "", "version": 1,
+        "kibanaSavedObjectMeta": {"searchSourceJSON": json.dumps({"query": {"query": "", "language": "kuery"}, "filter": []})}},
+        "references": []}
+
+
+def metric_params(base=BLUE, thresholds=None, calc="total", text="value_and_name"):
+    return {"showTitle": True, "title": "", "showPercentage": False, "valueCalculation": calc,
+            "thresholdOptions": {"baseColor": base, "thresholds": thresholds or []},
+            "useThresholdColor": True, "textMode": text, "colorMode": "background_gradient"}
+
+
 P_PIE = {"addTooltip": True, "addLegend": True, "legendPosition": "right", "legendTitle": "",
          "tooltipOptions": {"mode": "all"}, "exclusive": {"donut": True, "showValues": True, "showLabels": True, "truncate": 100}}
 P_BARH = {"addLegend": False, "barBorderColor": "#000000", "barBorderWidth": 1, "barPadding": 0.1,
           "barSizeMode": "auto", "barWidth": 0.7, "legendPosition": "bottom", "legendTitle": "",
           "showBarBorder": False, "showFullTimeRange": False, "stackMode": "none",
-          "switchAxes": True, "thresholdOptions": {"baseColor": "#0a65c6", "thresholds": [], "thresholdStyle": "off"},
+          "switchAxes": True, "thresholdOptions": {"baseColor": BLUE, "thresholds": [], "thresholdStyle": "off"},
           "titleOptions": {"show": False, "titleName": ""}, "tooltipOptions": {"mode": "all"}}
 _AXES = [{"position": "bottom", "show": True, "labels": {"show": True, "filter": True, "rotate": 0, "truncate": 100}, "title": {"text": ""}, "grid": {"showLines": False}, "axisRole": "x"},
          {"position": "left", "show": True, "labels": {"show": True, "filter": True, "rotate": 0, "truncate": 100}, "title": {"text": ""}, "grid": {"showLines": True}, "axisRole": "y"}]
 P_LINE = {"addLegend": True, "legendTitle": "", "legendPosition": "bottom", "addTimeMarker": False,
           "lineStyle": "line", "lineMode": "smooth", "lineWidth": 2, "tooltipOptions": {"mode": "all"},
-          "thresholdOptions": {"baseColor": "#00BD6B", "thresholds": [], "thresholdStyle": "off"},
+          "thresholdOptions": {"baseColor": GREEN, "thresholds": [], "thresholdStyle": "off"},
           "standardAxes": _AXES, "showFullTimeRange": False}
 P_TABLE = {"pageSize": 20, "globalAlignment": "left", "showColumnFilter": False, "showFooter": False,
            "footerCalculations": [], "cellTypes": [], "thresholds": [], "baseColor": "#000000",
            "dataLinks": [], "visibleColumns": [], "hiddenColumns": []}
 
 
-def dashboard(did, title, panel_ids, gridspec, variables=None):
+def dashboard(did, title, layout, variables=None):
+    """layout: list of (obj, x, y, w, h)."""
     panels, refs = [], []
-    for i, (pid, x, y, w, h) in enumerate(zip(panel_ids, *zip(*gridspec)) if False else _zip_grid(panel_ids, gridspec)):
+    for i, (obj, x, y, w, h) in enumerate(layout):
         name = f"panel_{i}"
         panels.append({"gridData": {"x": x, "y": y, "w": w, "h": h, "i": str(i)},
                        "panelIndex": str(i), "version": "3.0.0", "panelRefName": name})
-        refs.append({"id": pid, "name": name, "type": "explore"})
+        refs.append({"id": obj["id"], "name": name, "type": obj["type"]})
     attrs = {"title": title, "description": "", "panelsJSON": json.dumps(panels),
              "optionsJSON": json.dumps({"useMargins": True, "hidePanelTitles": False}),
              "version": 1, "timeRestore": True, "timeFrom": "now-24h", "timeTo": "now",
@@ -142,13 +156,6 @@ def dashboard(did, title, panel_ids, gridspec, variables=None):
     if variables:
         attrs["variablesJSON"] = json.dumps({"variables": variables})
     return {"id": did, "type": "dashboard", "attributes": attrs, "references": refs}
-
-
-def _zip_grid(panel_ids, gridspec):
-    out = []
-    for pid, (x, y, w, h) in zip(panel_ids, gridspec):
-        out.append((pid, x, y, w, h))
-    return out
 
 
 def create(ws, obj):
@@ -165,44 +172,64 @@ def delete_demo_dashboards(ws):
     r = _req("GET", f"{wp(ws)}/api/saved_objects/_find?type=dashboard&per_page=100&fields=title")
     for o in r.json().get("saved_objects", []):
         if o["attributes"].get("title") in DEMO_TITLES:
-            d = _req("DELETE", f"{wp(ws)}/api/saved_objects/dashboard/{o['id']}?force=true")
-            print(f"  deleted demo dashboard {o['attributes'].get('title')!r} [{d.status_code}]")
+            _req("DELETE", f"{wp(ws)}/api/saved_objects/dashboard/{o['id']}?force=true")
+            print(f"  deleted demo dashboard {o['attributes'].get('title')!r}")
+
+
+IN = "cast(`attributes.gen_ai.usage.input_tokens` as int)"
+OUT = "cast(`attributes.gen_ai.usage.output_tokens` as int)"
+OP = "`attributes.gen_ai.operation.name`"
 
 
 def build(span_id):
     R = "acme-run"; E = "acme-eval"
-    run_panels = [
-        ppl_panel(f"{R}-llm-calls", "LLM calls", "| where `attributes.gen_ai.operation.name`='chat' | stats count() as `LLM calls`", "metric", P_METRIC, {"value": ["LLM calls"]}, span_id),
-        ppl_panel(f"{R}-agent-runs", "Agent runs", "| where `attributes.gen_ai.operation.name`='invoke_agent' | stats count() as runs", "metric", P_METRIC, {"value": ["runs"]}, span_id),
-        ppl_panel(f"{R}-sessions", "Sessions", "| where `attributes.gen_ai.conversation.id`!='' | stats dc(`attributes.gen_ai.conversation.id`) as sessions", "metric", P_METRIC, {"value": ["sessions"]}, span_id),
-        ppl_panel(f"{R}-tokens", "Tokens in vs out", "| stats sum(cast(`attributes.gen_ai.usage.input_tokens` as int)) as `tokens in`, sum(cast(`attributes.gen_ai.usage.output_tokens` as int)) as `tokens out`", "table", P_TABLE, {}, span_id),
-        ppl_panel(f"{R}-models", "LLM models used", "| where `attributes.gen_ai.request.model`!='' | stats count() as calls by `attributes.gen_ai.request.model` | sort - calls", "pie", P_PIE, {"size": ["calls"], "color": ["attributes.gen_ai.request.model"]}, span_id),
-        ppl_panel(f"{R}-outcome", "Success vs failure", "| where `attributes.gen_ai.operation.name`='invoke_agent' | eval outcome=if(`status.code`=2,'failure','success') | stats count() as c by outcome", "pie", P_PIE, {"size": ["c"], "color": ["outcome"]}, span_id),
-        ppl_panel(f"{R}-tokens-time", "Tokens over time", "| where cast(`attributes.gen_ai.usage.total_tokens` as int) > 0 | stats sum(cast(`attributes.gen_ai.usage.input_tokens` as int)) as `in`, sum(cast(`attributes.gen_ai.usage.output_tokens` as int)) as `out` by span(endTime,5m)", "line", P_LINE, {"x": ["span(endTime,5m)"], "y": ["in", "out"]}, span_id),
-        ppl_panel(f"{R}-session-tbl", "Sessions by token use", "| where `attributes.gen_ai.conversation.id`!='' | stats count() as spans, sum(cast(`attributes.gen_ai.usage.input_tokens` as int)) as in_tokens by `attributes.gen_ai.conversation.id` | sort - spans", "table", P_TABLE, {}, span_id),
-        promql_panel(f"{R}-ingest-rate", "Span ingest vs export rate", "sum(rate(otelcol_receiver_accepted_spans_total[5m])) or sum(rate(otelcol_exporter_sent_spans_total[5m]))", "line", P_LINE, {"x": ["Time"], "y": ["Value"], "color": ["Series"]}),
-        promql_panel(f"{R}-export-fail", "Span export failures", "sum(otelcol_exporter_send_failed_spans_total) or on() vector(0)", "metric", P_METRIC_LAST, {"value": ["Value"], "time": ["Time"]}),
-    ]
-    run_grid = [(0,0,12,8),(12,0,12,8),(24,0,12,8),(36,0,12,8),
-                (0,8,16,15),(16,8,16,15),(32,8,16,15),
-                (0,23,24,15),(24,23,24,15),(0,38,12,8)]
+    P = lambda *a, **k: ppl_panel(*a, span_id=span_id, **k)
 
-    eval_panels = [
-        ppl_panel(f"{E}-runs", "Eval runs", "| where `attributes.gen_ai.operation.name`='invoke_agent' and `attributes.gen_ai.agent.name`='eval_case' | stats count() as `eval runs`", "metric", P_METRIC, {"value": ["eval runs"]}, span_id),
-        ppl_panel(f"{E}-passpct", "Overall pass %", "| where `attributes.gen_ai.operation.name`='evaluation' | stats avg(`attributes.gen_ai.evaluation.score.value`) as avg_score | eval `pass %` = round(avg_score * 100, 1) | fields `pass %`", "metric", P_METRIC, {"value": ["pass %"]}, span_id),
-        ppl_panel(f"{E}-score-events", "Score events", "| where `attributes.gen_ai.operation.name`='evaluation' | stats count() as n", "metric", P_METRIC, {"value": ["n"]}, span_id),
-        ppl_panel(f"{E}-avg-by-metric", "Avg score by metric", "| where `attributes.gen_ai.operation.name`='evaluation' | stats avg(`attributes.gen_ai.evaluation.score.value`) as score by `attributes.gen_ai.evaluation.name` | sort - score", "bar", P_BARH, {"x": ["attributes.gen_ai.evaluation.name"], "y": ["score"]}, span_id),
-        ppl_panel(f"{E}-count-by-metric", "Score events by metric", "| where `attributes.gen_ai.operation.name`='evaluation' | stats count() as n by `attributes.gen_ai.evaluation.name` | sort - n", "bar", P_BARH, {"x": ["attributes.gen_ai.evaluation.name"], "y": ["n"]}, span_id),
-        ppl_panel(f"{E}-scores-time", "Avg score over time", "| where `attributes.gen_ai.operation.name`='evaluation' | stats avg(`attributes.gen_ai.evaluation.score.value`) as score by span(endTime,5m), `attributes.gen_ai.evaluation.name`", "line", P_LINE, {"x": ["span(endTime,5m)"], "y": ["score"], "color": ["attributes.gen_ai.evaluation.name"]}, span_id),
-        ppl_panel(f"{E}-fails", "Failing evals by metric", "| where `attributes.gen_ai.operation.name`='evaluation' and `attributes.gen_ai.evaluation.score.value` < 1 | stats count() as fails by `attributes.gen_ai.evaluation.name` | sort - fails", "table", P_TABLE, {}, span_id),
+    # ---- Run Details panels ----
+    run = [
+        (md_panel(f"{R}-h1", "hdr", "### Traffic & reliability"), 0, 0, 48, 3),
+        (P(f"{R}-runs", "Agent runs", f"| where {OP}='invoke_agent' | stats count() as runs", "metric", metric_params(BLUE), {"value": ["runs"]}), 0, 3, 10, 8),
+        (P(f"{R}-llm-calls", "LLM calls", f"| where {OP}='chat' | stats count() as `LLM calls`", "metric", metric_params(BLUE), {"value": ["LLM calls"]}), 10, 3, 9, 8),
+        (P(f"{R}-success", "Success rate %", f"| where {OP}='invoke_agent' | eval ok=if(`status.code`=2,0.0,1.0) | stats avg(ok) as a | eval `success %`=round(a * 100, 1) | fields `success %`", "metric", metric_params(GREEN), {"value": ["success %"]}), 19, 3, 10, 8),
+        (P(f"{R}-errrate", "Error rate %", f"| where {OP}='invoke_agent' | eval err=if(`status.code`=2,1.0,0.0) | stats avg(err) as a | eval `error %`=round(a * 100, 1) | fields `error %`", "metric", metric_params(RED), {"value": ["error %"]}), 29, 3, 10, 8),
+        (P(f"{R}-sessions", "Sessions", "| where `attributes.gen_ai.conversation.id`!='' | stats dc(`attributes.gen_ai.conversation.id`) as sessions", "metric", metric_params(SLATE), {"value": ["sessions"]}), 39, 3, 9, 8),
+        (P(f"{R}-outcome", "Success vs failure", f"| where {OP}='invoke_agent' | eval outcome=if(`status.code`=2,'failure','success') | stats count() as c by outcome", "pie", P_PIE, {"size": ["c"], "color": ["outcome"]}), 0, 11, 16, 14),
+        (P(f"{R}-errtbl", "Recent error traces", f"| where `status.code`=2 | fields endTime, name, `events.attributes.exception.message` | sort - endTime | head 20", "table", P_TABLE, {}), 16, 11, 32, 14),
+        (md_panel(f"{R}-h2", "hdr", "### Latency & cost"), 0, 25, 48, 3),
+        (P(f"{R}-p50", "Latency P50 (s)", f"| where {OP}='invoke_agent' | stats percentile(durationInNanos,50) as p | eval `p50 s`=round(p/1000000000.0,2) | fields `p50 s`", "metric", metric_params(BLUE), {"value": ["p50 s"]}), 0, 28, 12, 8),
+        (P(f"{R}-p95", "Latency P95 (s)", f"| where {OP}='invoke_agent' | stats percentile(durationInNanos,95) as p | eval `p95 s`=round(p/1000000000.0,2) | fields `p95 s`", "metric", metric_params(AMBER), {"value": ["p95 s"]}), 12, 28, 12, 8),
+        (P(f"{R}-cost", "Est. cost $ (approx)", f"| stats sum({IN}) as ti, sum({OUT}) as to | eval `est $`=round(ti / 1000000.0 * 3 + to / 1000000.0 * 15, 3) | fields `est $`", "metric", metric_params(GREEN), {"value": ["est $"]}), 24, 28, 12, 8),
+        (P(f"{R}-tokens", "Tokens in vs out", f"| stats sum({IN}) as `tokens in`, sum({OUT}) as `tokens out`", "table", P_TABLE, {}), 36, 28, 12, 8),
+        (P(f"{R}-throughput", "Throughput (runs / 5m)", f"| where {OP}='invoke_agent' | stats count() as runs by span(endTime,5m)", "line", P_LINE, {"x": ["span(endTime,5m)"], "y": ["runs"]}), 0, 36, 24, 14),
+        (P(f"{R}-tokens-time", "Tokens over time", f"| where cast(`attributes.gen_ai.usage.total_tokens` as int) > 0 | stats sum({IN}) as `in`, sum({OUT}) as `out` by span(endTime,5m)", "line", P_LINE, {"x": ["span(endTime,5m)"], "y": ["in", "out"]}), 24, 36, 24, 14),
+        (md_panel(f"{R}-h3", "hdr", "### Models, tools & sessions"), 0, 50, 48, 3),
+        (P(f"{R}-models", "LLM models used", "| where `attributes.gen_ai.request.model`!='' | stats count() as calls by `attributes.gen_ai.request.model` | sort - calls", "pie", P_PIE, {"size": ["calls"], "color": ["attributes.gen_ai.request.model"]}), 0, 53, 16, 15),
+        (P(f"{R}-tools", "Tool usage", f"| where {OP}='execute_tool' | stats count() as calls by `attributes.gen_ai.tool.name` | sort - calls", "bar", P_BARH, {"x": ["attributes.gen_ai.tool.name"], "y": ["calls"]}), 16, 53, 16, 15),
+        (P(f"{R}-session-tbl", "Sessions by token use", f"| where `attributes.gen_ai.conversation.id`!='' | stats count() as spans, sum({IN}) as in_tokens by `attributes.gen_ai.conversation.id` | sort - spans", "table", P_TABLE, {}), 32, 53, 16, 15),
+        (md_panel(f"{R}-h4", "hdr", "### Telemetry pipeline (PromQL / Prometheus)"), 0, 68, 48, 3),
+        (promql_panel(f"{R}-ingest", "Span ingest vs export rate", "sum(rate(otelcol_receiver_accepted_spans_total[5m])) or sum(rate(otelcol_exporter_sent_spans_total[5m]))", "line", P_LINE, {"x": ["Time"], "y": ["Value"], "color": ["Series"]}), 0, 71, 36, 12),
+        (promql_panel(f"{R}-exfail", "Span export failures", "sum(otelcol_exporter_send_failed_spans_total) or on() vector(0)", "metric", metric_params(RED, calc="last"), {"value": ["Value"], "time": ["Time"]}), 36, 71, 12, 12),
     ]
-    eval_grid = [(0,0,16,8),(16,0,16,8),(32,0,16,8),
-                 (0,8,24,15),(24,8,24,15),
-                 (0,23,32,15),(32,23,16,15)]
 
-    d1 = dashboard("acme-agent-run-details", "Acme Agent - Run Details", [p["id"] for p in run_panels], run_grid)
-    d2 = dashboard("acme-agent-evals", "Acme Agent - Evals", [p["id"] for p in eval_panels], eval_grid)
-    return run_panels + eval_panels, [d1, d2]
+    # ---- Evals panels ----
+    EV = f"| where {OP}='evaluation'"
+    ev = [
+        (md_panel(f"{E}-h1", "hdr", "### Eval quality"), 0, 0, 48, 3),
+        (P(f"{E}-runs", "Eval runs", f"| where {OP}='invoke_agent' and `attributes.gen_ai.agent.name`='eval_case' | stats count() as `eval runs`", "metric", metric_params(BLUE), {"value": ["eval runs"]}), 0, 3, 12, 8),
+        (P(f"{E}-pass", "Overall pass %", f"{EV} | stats avg(`attributes.gen_ai.evaluation.score.value`) as a | eval `pass %`=round(a * 100, 1) | fields `pass %`", "metric", metric_params(GREEN), {"value": ["pass %"]}), 12, 3, 12, 8),
+        (P(f"{E}-fails", "Failed checks", f"{EV} and `attributes.gen_ai.evaluation.score.value` < 1 | stats count() as fails", "metric", metric_params(RED), {"value": ["fails"]}), 24, 3, 12, 8),
+        (P(f"{E}-events", "Score events", f"{EV} | stats count() as n", "metric", metric_params(SLATE), {"value": ["n"]}), 36, 3, 12, 8),
+        (P(f"{E}-avg", "Avg score by metric", f"{EV} | stats avg(`attributes.gen_ai.evaluation.score.value`) as score by `attributes.gen_ai.evaluation.name` | sort - score", "bar", P_BARH, {"x": ["attributes.gen_ai.evaluation.name"], "y": ["score"]}), 0, 11, 24, 15),
+        (P(f"{E}-failbymetric", "Failing checks by metric", f"{EV} and `attributes.gen_ai.evaluation.score.value` < 1 | stats count() as fails by `attributes.gen_ai.evaluation.name` | sort - fails", "bar", P_BARH, {"x": ["attributes.gen_ai.evaluation.name"], "y": ["fails"]}), 24, 11, 24, 15),
+        (md_panel(f"{E}-h2", "hdr", "### Score trend"), 0, 26, 48, 3),
+        (P(f"{E}-time", "Avg score over time", f"{EV} | stats avg(`attributes.gen_ai.evaluation.score.value`) as score by span(endTime,5m), `attributes.gen_ai.evaluation.name`", "line", P_LINE, {"x": ["span(endTime,5m)"], "y": ["score"], "color": ["attributes.gen_ai.evaluation.name"]}), 0, 29, 32, 15),
+        (P(f"{E}-failtbl", "Failing checks by metric", f"{EV} and `attributes.gen_ai.evaluation.score.value` < 1 | stats count() as fails by `attributes.gen_ai.evaluation.name` | sort - fails", "table", P_TABLE, {}), 32, 29, 16, 15),
+    ]
+
+    d1 = dashboard("acme-agent-run-details", "Acme Agent - Run Details", run)
+    d2 = dashboard("acme-agent-evals", "Acme Agent - Evals", ev)
+    objs = [o for (o, *_g) in run] + [o for (o, *_g) in ev]
+    return objs, [d1, d2]
 
 
 def main():
@@ -211,10 +238,10 @@ def main():
     span_id = find_index_pattern_id(ws, SPAN_PATTERN)
     print(f"workspace={ws} span_index_pattern={span_id}")
     delete_demo_dashboards(ws)
-    panels, dashboards = build(span_id)
+    objs, dashboards = build(span_id)
     print("creating panels:")
-    for p in panels:
-        create(ws, p)
+    for o in objs:
+        create(ws, o)
     print("creating dashboards:")
     for d in dashboards:
         create(ws, d)

@@ -7,14 +7,21 @@ monkeypatch still works, and builds the answer straight from the tool's
 deterministic result. The chat span is still emitted (op=Op.CHAT) so the same
 telemetry shape (invoke_agent -> chat -> execute_tool -> retrieval/embeddings)
 comes out of the trace, just without any real model or embedding call.
+
+Records a deterministic nominal token usage per turn so cost/token dashboards
+are meaningful offline. Honors ACME_FAULT (see acme/faults.py) to emit failure
+telemetry for demos.
 """
 
 from __future__ import annotations
 
 import re
+import time
 
 from ..observability import observe, enrich, Op
 from ..tools import TOOL_FUNCTIONS
+from ..usage import record_usage
+from ..faults import active_faults
 
 _ORDER_HINT_RE = re.compile(r"order")
 _NUMBER_RE = re.compile(r"\d{3,}")
@@ -38,16 +45,13 @@ def _route_and_call(question: str) -> tuple[str, dict]:
     return "search_policy", TOOL_FUNCTIONS["search_policy"](question)
 
 
-@observe(op=Op.CHAT, name="mock-chat")
-def _mock_chat(question: str) -> str:
-    """The mock "model turn" — deterministic routing + answer synthesis."""
-    tool_name, result = _route_and_call(question)
-
+def _answer_from(tool_name: str, result: dict, question: str) -> str:
+    """Synthesize the mock answer from a tool result."""
     if isinstance(result, dict) and result.get("error"):
         if tool_name == "lookup_order":
             return f"Sorry, I couldn't find an order matching {question!r}."
         if tool_name == "check_inventory":
-            return f"Sorry, I couldn't find that SKU."
+            return "Sorry, I couldn't find that SKU."
         return "Sorry, I couldn't find an answer to that in our policy docs."
 
     if tool_name == "lookup_order":
@@ -66,7 +70,43 @@ def _mock_chat(question: str) -> str:
     return result["answer"]
 
 
+def _record_nominal(question: str, answer: str) -> None:
+    """Deterministic token accounting so cost/token panels have data offline."""
+    record_usage(len(question) * 3 + 400, len(answer) * 3 + 40)
+
+
+@observe(op=Op.CHAT, name="mock-chat")
+def _mock_chat(question: str, faults: frozenset = frozenset()) -> str:
+    """The mock "model turn" — deterministic routing + answer synthesis."""
+    # wrong: call the wrong tool and return a non-answer (fails correctness/right_tool/trajectory).
+    if "wrong" in faults:
+        TOOL_FUNCTIONS["search_policy"](question)
+        answer = "I'm not sure about that — please contact Acme support."
+        _record_nominal(question, answer)
+        return answer
+
+    tool_name, result = _route_and_call(question)
+
+    # loop: repeat the tool call so the trace shows a runaway loop (fails no_loops).
+    if "loop" in faults:
+        for _ in range(4):  # 1 call already made above -> 5 execute_tool spans total
+            _route_and_call(question)
+
+    answer = _answer_from(tool_name, result, question)
+    _record_nominal(question, answer)
+    return answer
+
+
 def run_turn(question: str, history: list[dict]) -> str:
     """Offline drop-in for the real framework adapters' run_turn."""
     enrich(model="mock", provider="mock")
-    return _mock_chat(question)
+    faults = frozenset(active_faults())
+
+    if "error" in faults:
+        raise RuntimeError("Simulated Bedrock ThrottlingException: request rate exceeded")
+    if "slow" in faults:
+        time.sleep(9)  # breach LATENCY_BUDGET_S (8s)
+    if "cost" in faults:
+        record_usage(5200, 900)  # exceed TOKEN_BUDGET (4000)
+
+    return _mock_chat(question, faults)
