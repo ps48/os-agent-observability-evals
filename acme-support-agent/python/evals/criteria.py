@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import os
 
+from acme.mock import mock_enabled
+
 
 # Goal -> criterion mapping (mirrors the table in blog Part 1).
 GOALS = {
@@ -42,6 +44,8 @@ def judge_answer_correctness(question: str, answer: str, expected_substring: str
 
 def _llm_judge(question: str, answer: str, expected: str):
     """Return 1.0/0.0 from a Bedrock judge, or None if the call is unavailable."""
+    if mock_enabled():
+        return 1.0 if expected.lower() in answer.lower() else 0.0
     try:
         import boto3
         region = os.environ.get("AWS_REGION", "us-west-2")

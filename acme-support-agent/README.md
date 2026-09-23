@@ -71,6 +71,11 @@ python -m evals.run_evals
 Then open OpenSearch Dashboards at http://localhost:5601 (admin / `My_password_123!@#`)
 to explore the traces.
 
+No provider account? Set `ACME_MOCK=1` (step 4) to run the whole tutorial fully
+offline with deterministic canned responses — only the local observability
+stack is needed, no AWS/OpenAI/Anthropic creds. Unset it (or `ACME_MOCK=0`) to
+use the real provider again.
+
 ## Repo layout
 
 ```

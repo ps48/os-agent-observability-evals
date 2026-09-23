@@ -14,6 +14,7 @@ import os
 import json
 
 from .observability import observe, enrich, Op
+from .mock import mock_enabled
 
 # ---------------------------------------------------------------------------
 # Fake backing data (a real agent would hit a DB / service here).
@@ -68,6 +69,9 @@ def _embed_query(query: str) -> list[float]:
     Falls back to a deterministic stub vector if the call fails or creds are
     missing, so the suite still runs offline — the embeddings span still appears.
     """
+    if mock_enabled():
+        enrich(embedding_mock=True)
+        return [float((abs(hash(query)) >> i) & 1) for i in range(8)]
     try:
         import boto3
         region = os.environ.get("AWS_REGION", "us-west-2")

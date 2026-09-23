@@ -229,6 +229,13 @@ with the Strands
 [`strands_agent.py`](https://github.com/anirudha/os-agent-observability-evals/blob/main/acme-support-agent-py-strands/strands_agent.py)
 to see how little changes.
 
+> **No provider account yet?** Set `ACME_MOCK=1` and the Python agent runs this whole
+> tutorial fully offline — deterministic canned responses stand in for the model and
+> embedding calls, but the same `invoke_agent` → `chat` → `execute_tool` →
+> `retrieval`/`embeddings` spans (and eval scores) still land in OpenSearch. You only need
+> the observability stack from Part 2, not AWS/OpenAI/Anthropic creds. Unset it to go back
+> to the real provider.
+
 > **Deploying to a managed runtime?** The
 > [`acme-support-agent-agentcore`](https://github.com/anirudha/os-agent-observability-evals/tree/main/acme-support-agent-agentcore)
 > variant wraps the same agent in an **Amazon Bedrock AgentCore Runtime** `@app.entrypoint`.
