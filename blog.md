@@ -423,8 +423,10 @@ tools teams already know (Arize/Phoenix, Braintrust, LangSmith, Langfuse):
   filters govern every panel.
 
 ![Acme Agent — Run Details dashboard](images/dashboard-run-details.png)
+*Run Details — agent health strip, RED-metric KPI cards with trend sparklines, latency percentiles, per-model tokens, tool analytics, and an error-traces table that deep-links into the span waterfall.*
 
 ![Acme Agent — Evals dashboard](images/dashboard-evals.png)
+*Evals — total/passed cases, mean & min judge score, pass-rate gauge, outcome donut and judge-score-by-case, with Check / Experiment / Mode filters governing every panel.*
 
 Bring them up with the compose override (it also skips the bundled sample dashboards, so
 Dashboards shows only what this tutorial needs):
