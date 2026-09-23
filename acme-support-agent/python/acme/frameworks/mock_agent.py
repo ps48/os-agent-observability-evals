@@ -131,6 +131,8 @@ def run_turn(question: str, history: list[dict]) -> str:
         raise RuntimeError("Simulated Bedrock ThrottlingException: request rate exceeded")
     if "slow" in faults:
         time.sleep(9)  # breach LATENCY_BUDGET_S (8s)
+    else:
+        time.sleep(random.uniform(0.05, 0.9))  # realistic latency spread so P50/P95/P99 differ
     if "cost" in faults:
         record_usage(5200, 900)  # exceed TOKEN_BUDGET (4000)
         enrich(model=model, input_tokens=5200, output_tokens=900)  # show the blowup in token panels

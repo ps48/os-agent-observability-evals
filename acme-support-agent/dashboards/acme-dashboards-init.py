@@ -108,7 +108,7 @@ P_LINE = {"addLegend": True, "legendTitle": "", "legendPosition": "bottom", "add
           "thresholdOptions": {"baseColor": GREEN, "thresholds": [], "thresholdStyle": "off"},
           "standardAxes": [_AX_X, _AX_Y], "showFullTimeRange": False}
 P_AREA = {**P_LINE, "stackMode": "stacked"}
-P_TABLE = {"pageSize": 20, "globalAlignment": "left", "showColumnFilter": False, "showFooter": True,
+P_TABLE = {"pageSize": 20, "globalAlignment": "left", "showColumnFilter": False, "showFooter": False,
            "footerCalculations": [], "cellTypes": [], "thresholds": [], "baseColor": "#000000",
            "dataLinks": [], "visibleColumns": [], "hiddenColumns": []}
 
@@ -286,7 +286,7 @@ EXP = "`attributes.test.suite.name`"     # experiment (groups comparable runs)
 RUNID = "`attributes.test.suite.run.id`" # one eval run
 EVMODE = "`attributes.eval_mode`"        # offline (suite) | online (live sample)
 SPAN10 = "span(endTime,10m)"
-NAV_H = 10  # nav/overview panel height; content below is authored against y>=8 and shifted
+NAV_H = 7  # nav/overview panel height; content below is authored against y>=8 and shifted
 
 
 def _shift(layout):
@@ -348,19 +348,19 @@ def build(ws, span_id):
         (P(f"{R}-latdist", "Latency distribution (s)", f"| where {OP}='invoke_agent' | eval s=round(durationInNanos / 1000000000.0,1) | fields s", "histogram", histogram_params(BLUE), {"x": ["s"]}), 24, 27, 24, 15),
         # cost & tokens
         (md_panel(f"{R}-h-cost", "##### Cost & tokens"), 0, 34, 24, 3),
-        (P(f"{R}-tok-model", "Tokens by model", f"| where {MODEL}!='' {MF} | stats sum({TOT}) as tokens by {MODEL} | sort - tokens", "bar", P_BARH, {"x": [MODEL.strip('`')], "y": ["tokens"]}), 0, 37, 24, 15),
-        (P(f"{R}-tok-time", "Tokens in vs out over time", f"| where {TOT} > 0 {MF} | stats sum({IN}) as `in`, sum({OUT}) as `out` by {SPAN10}", "area", P_AREA, {"x": [SPAN10], "y": ["in", "out"]}), 24, 42, 24, 15),
+        (P(f"{R}-tok-model", "Tokens by model", f"| where {MODEL}!='' {MF} | eval model=replace(replace({MODEL},'us.anthropic.',''),'amazon.','') | stats sum({IN}) as i, sum({OUT}) as o by model | eval tokens=i + o | sort - tokens", "bar", P_BARH, {"x": ["model"], "y": ["tokens"]}), 0, 37, 24, 15),
+        (P(f"{R}-tok-time", "Tokens in vs out over time", f"| where {IN} > 0 {MF} | stats sum({IN}) as `in`, sum({OUT}) as `out` by {SPAN10}", "area", P_AREA, {"x": [SPAN10], "y": ["in", "out"]}), 24, 42, 24, 15),
         # tools & throughput
         (md_panel(f"{R}-h-tools", "##### Tools & throughput"), 24, 34, 24, 3),
-        (P(f"{R}-tools", "Tool analytics", f"| where {OP}='execute_tool' and isnotnull(`attributes.gen_ai.tool.name`) and `attributes.gen_ai.tool.name`!='' | stats count() as calls, avg(durationInNanos) as d by `attributes.gen_ai.tool.name` | eval `avg ms`=round(d / 1000000.0,2) | fields `attributes.gen_ai.tool.name`, calls, `avg ms` | sort - calls", "table", P_TABLE, {}), 24, 37, 24, 8),
+        (P(f"{R}-tools", "Tool analytics", f"| where {OP}='execute_tool' and isnotnull(`attributes.gen_ai.tool.name`) and `attributes.gen_ai.tool.name`!='' | stats count() as calls, avg(durationInNanos) as d by `attributes.gen_ai.tool.name` | eval tool=`attributes.gen_ai.tool.name`, `avg ms`=round(d / 1000000.0,2) | fields tool, calls, `avg ms` | sort - calls", "table", P_TABLE, {}), 24, 37, 24, 8),
         (P(f"{R}-throughput", "Throughput (runs / 10m)", f"| where {OP}='invoke_agent' | stats count() as runs by {SPAN10}", "line", P_LINE, {"x": [SPAN10], "y": ["runs"]}), 0, 52, 24, 15),
         # errors (drill-down)
         (md_panel(f"{R}-h-err", "##### Errors  ·  click a row's trace ID to open the trace"), 0, 67, 48, 3),
-        (P(f"{R}-errtbl", "Recent error traces", f"| where `status.code`=2 | fields traceId, endTime, name, `events.attributes.exception.message` | sort - endTime | head 20", "table", table_links(ws, span_id), {}), 0, 70, 48, 15),
+        (P(f"{R}-errtbl", "Recent error traces", f"| where `status.code`=2 | fields traceId, endTime, name, `events.attributes.exception.message` | sort - endTime | head 20", "table", table_links(ws, span_id), {}), 0, 70, 48, 9),
         # pipeline (PromQL)
-        (md_panel(f"{R}-h-pipe", "##### Telemetry pipeline (PromQL / Prometheus)"), 0, 85, 48, 3),
-        (promql_panel(f"{R}-ingest", "Span ingest vs export rate", "sum(rate(otelcol_receiver_accepted_spans_total[5m])) or sum(rate(otelcol_exporter_sent_spans_total[5m]))", "line", P_LINE, {"x": ["Time"], "y": ["Value"], "color": ["Series"]}), 0, 88, 36, 12),
-        (promql_panel(f"{R}-exfail", "Span export failures", "sum(otelcol_exporter_send_failed_spans_total) or on() vector(0)", "metric", metric_params(RED, calc="last"), {"value": ["Value"], "time": ["Time"]}), 36, 88, 12, 12),
+        (md_panel(f"{R}-h-pipe", "##### Telemetry pipeline (PromQL / Prometheus)"), 0, 79, 48, 3),
+        (promql_panel(f"{R}-ingest", "Span ingest vs export rate", 'label_replace(sum(rate(otelcol_receiver_accepted_spans_total[5m])),"series","accepted","","") or label_replace(sum(rate(otelcol_exporter_sent_spans_total[5m])),"series","exported","","")', "line", P_LINE, {"x": ["Time"], "y": ["Value"], "color": ["series"]}), 0, 82, 36, 12),
+        (promql_panel(f"{R}-exfail", "Span export failures", "sum(otelcol_exporter_send_failed_spans_total) or on() vector(0)", "metric", metric_params(GREEN, thresholds=[{"value": 0, "color": GREEN}, {"value": 1, "color": RED}], calc="last"), {"value": ["Value"], "time": ["Time"]}), 36, 82, 12, 12),
     ]
 
     # Every eval panel reads `evaluation` spans and applies the combined filter EF

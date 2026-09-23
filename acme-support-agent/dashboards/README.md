@@ -178,7 +178,10 @@ run the agent over time.
   to label a run (default `<framework>@<model>`). The "Mean score by run" panel + Experiment
   filter compare runs (v1 vs v2).
 - **Mock models:** in mock mode each turn picks one of a few real Bedrock model IDs (random), so
-  the Model filter has variety; pin one with `ACME_MODEL`.
+  the Model filter has variety; pin one with `ACME_MODEL`. Mock also adds a small random latency
+  (0.05–0.9s) so the P50/P95/P99 cards and latency distribution show a realistic spread.
+- **Token panels** sum `input_tokens + output_tokens` (not `total_tokens`, which the mock adapter
+  doesn't emit) so cost/token viz populate in both mock and real runs.
 - **Rollover gotcha:** if Data Prepper rolls the span index over to a fresh empty
   `otel-v1-apm-span-00000N`, its template maps `events.attributes` as a scalar while the
   populated index has it as an object — the mismatch makes wildcard PPL fail to plan
