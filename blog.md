@@ -350,11 +350,27 @@ pointed at `localhost:4318`.
 Now the payoff: seeing what your agent actually did.
 
 **OpenSearch Dashboards** is where you explore — trace tree / DAG / timeline views,
-the service map, and ad-hoc PPL. A few queries you'll reach for constantly:
+the service map, and ad-hoc PPL. The **Agent Traces** app lists every agent run with its
+kind, status, latency, and token count:
+
+![Agent Traces list in OpenSearch Dashboards](images/agent-traces-list.png)
+
+A few queries you'll reach for constantly:
 
 > The APM **service map** needs multiple instrumented services; the single Acme agent
 > produces no inter-service edges, so use the per-trace **Trace Tree** (Agent Traces app)
 > to inspect the span hierarchy.
+
+Click any trace to open its **Trace Tree** — the full span hierarchy for one question. A real
+Bedrock run shows `invoke_agent → chat → execute_tool → embeddings → retrieval` with token
+counts and a per-metric `evaluation` span for each score:
+
+![Trace tree for a real Bedrock run](images/trace-tree-real.png)
+
+The same tree in **mock mode** (`ACME_MOCK=1`) — identical structure, `model=mock`, zero tokens,
+produced entirely offline with no provider credentials:
+
+![Trace tree for a mock run](images/trace-tree-mock.png)
 
 Reconstruct a single trace (the whole reasoning tree for one question):
 
@@ -400,6 +416,11 @@ curl -sk -u admin:'My_password_123!@#' \
   -H 'Content-Type: application/json' \
   -d '{"query": "source=otel-v1-apm-span-* | where `attributes.gen_ai.conversation.id` != '\'''\'' | stats count() as turns, sum(cast(`attributes.gen_ai.usage.input_tokens` as int)) as in_tokens by `attributes.gen_ai.conversation.id`"}'
 ```
+
+The **Spans** tab flattens every span with its `attributes.gen_ai.*` fields, for ad-hoc filtering
+across traces:
+
+![Spans view in the Agent Traces app](images/spans-view.png)
 
 This is also where you catch the failure modes from Part 1: a trace with three `chat` spans and
 no `execute_tool` is the "looped and hallucinated" case made visible.
