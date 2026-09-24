@@ -136,7 +136,7 @@ your agent → OTel Collector (normalize) → Data Prepper (service maps, correl
 Quick sanity check that the cluster is up:
 
 ```bash
-curl -sk -u admin:'My_password_123!@#' https://localhost:9200/_cluster/health?pretty
+curl -sk -u admin:'My_password_123!@#' 'https://localhost:9200/_cluster/health?pretty'
 # expect "status": "green" or "yellow"
 ```
 
@@ -243,6 +243,23 @@ to see how little changes.
 > `invoke_agent` trace — instrumentation survives the move from laptop to managed endpoint
 > unchanged.
 
+**Run it.** The repo's `acme-support-agent/` is the code above, already wired up. Set up its
+environment and send Acme one question — with `ACME_MOCK=1` you need nothing but the stack from
+Part 2 (no provider account):
+
+```bash
+cd acme-support-agent/python
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[bedrock]"          # or [openai] / [anthropic] / [langchain] / [llamaindex] / [all]
+
+# offline: deterministic canned model + embedding responses, real spans
+ACME_MOCK=1 python -m acme.run "where is my order #1007?"
+# drop ACME_MOCK to call your real provider (needs creds for the extra you installed)
+```
+
+That single call emits the full `invoke_agent → chat → execute_tool → retrieval → embeddings`
+trace to OpenSearch — which is exactly what Part 4 verifies next.
+
 ### 3b. TypeScript / Node — the native SDK
 
 The TypeScript SDK is published and has full parity with Python:
@@ -302,8 +319,8 @@ Don't move on until data is actually landing correctly. Three checks.
 **1. Indices exist and are filling up:**
 
 ```bash
-curl -sk -u admin:'My_password_123!@#' https://localhost:9200/_cat/indices?v
-# look for otel-v1-apm-span-*
+curl -sk -u admin:'My_password_123!@#' 'https://localhost:9200/_cat/indices?v'
+# look for otel-v1-apm-span-*  (quote the URL — zsh treats ? as a glob)
 ```
 
 ```bash
@@ -336,7 +353,8 @@ healthy shape is: **one `invoke_agent` → one or more `chat` → an `execute_to
 
 ```bash
 curl -s http://localhost:8888/metrics | grep -E "otelcol_receiver_accepted_spans|otelcol_exporter_send_failed_spans"
-# accepted should climb; send_failed should stay at 0
+# accepted should climb. send_failed is only emitted once it's non-zero, so seeing
+# only the accepted line (no send_failed) is the healthy case — nothing is being dropped.
 ```
 
 If counts are zero, the [stack-health troubleshooting](#) path is: check the Collector
@@ -438,9 +456,11 @@ docker compose -f docker-compose.yml \
 ```
 
 To populate them with a realistic mix of successes and failures — no cloud credentials needed —
-run the offline generator, then refresh after ~90s of Data Prepper ingestion:
+run the offline generator (it reuses the `acme-support-agent/python/.venv` you created in Part 3),
+then refresh after ~90s of Data Prepper ingestion:
 
 ```bash
+cd ..    # back to the repo root (the previous block left you in observability-stack/)
 ./acme-support-agent/dashboards/demo-data.sh
 ```
 
@@ -488,6 +508,15 @@ the trend as you iterate:
   expected tool path, or wander? For Acme's order-status question the golden trajectory is
   exactly `invoke_agent → lookup_order → answer`. Any extra `chat` loops or a `search_policy`
   detour shows up as a trajectory mismatch.
+
+Run the whole suite over the dataset (same venv from Part 3) — the scores land as `evaluation`
+spans next to the traces they grade:
+
+```bash
+cd acme-support-agent/python        # venv active, from Part 3
+ACME_MOCK=1 python -m evals.run_evals
+# add ACME_LLM_JUDGE=1 to score answer_correctness with a Bedrock judge instead of a substring check (needs creds)
+```
 
 The loop: **run evals → read the failures in Dashboards → fix the prompt/tools → re-run.**
 Because scores are emitted as spans, "did v2 of the prompt regress on cost or correctness?" is
@@ -597,4 +626,3 @@ The full, runnable code — the main multi-framework tutorial plus the five stan
 **[github.com/anirudha/os-agent-observability-evals](https://github.com/anirudha/os-agent-observability-evals)**.
 Clone it with `--recurse-submodules`, `docker compose up -d` in `observability-stack/`, and run
 the variant that matches your stack.
-```
